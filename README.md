@@ -2,6 +2,10 @@
 
 **Casualties: Unknown** 的 BepInEx Mod 管理器：一站检查更新、浏览下载新 Mod、整理插件目录。
 
+[![build](https://github.com/Luncot/cu-mod-updater/actions/workflows/build.yml/badge.svg)](https://github.com/Luncot/cu-mod-updater/actions/workflows/build.yml)
+[![release](https://img.shields.io/github/v/release/Luncot/cu-mod-updater)](../../releases)
+[![license](https://img.shields.io/github/license/Luncot/cu-mod-updater)](LICENSE)
+
 > A BepInEx mod manager for *Casualties: Unknown* — update checking, mod browsing
 > (Nexus / GitHub / GameBanana) and plugin folder cleanup, in one dark-theme Windows app.
 
@@ -47,12 +51,21 @@
 
 ## 快速开始
 
+### 运行要求
+
+| 项目 | 要求 |
+|---|---|
+| 系统 | Windows 10 1809+ / Windows 11（需要 WIC 支持，用于解码 N 网的 WebP 预览图） |
+| 运行时 | [.NET 8 桌面运行时](https://dotnet.microsoft.com/download/dotnet/8.0)（x64，选 **Desktop Runtime**，免费） |
+| 游戏 | 已装 BepInEx 5（`BepInEx/plugins/` 目录存在） |
+
 ### 方式一：下载现成 exe（推荐）
 
 到 [Releases](../../releases) 下载 `CU-ModUpdater.exe`，放进任意目录双击运行。
 
-- **单文件发布版**，不依赖 .NET 运行时
-- 首次启动会在设置里让你确认游戏路径（支持自动检测 Steam / 常见安装位置）
+- **单文件版**（约 1MB）：所有代码打包进一个 exe，但**依赖上面的 .NET 8 桌面运行时**
+  （没有的话双击会提示缺失框架，装一次即可）
+- 首次启动会让你确认游戏路径，支持自动检测 Steam / 常见安装位置
 
 ### 方式二：从源码构建
 
@@ -63,12 +76,16 @@ cd cu-mod-updater
 # 直接运行
 dotnet run -c Release
 
-# 或发布单文件 exe
+# 或发布单文件 exe（与 Releases 里的产物完全一致）
 dotnet publish -c Release -r win-x64 --self-contained false \
-  -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true
+  -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -o publish
 ```
 
-> 需要 .NET 8 SDK（构建）/ .NET 8 Desktop Runtime（非自包含运行）。
+> 构建需要 .NET 8 SDK。
+
+### 方式三：等自动构建（发新版本时）
+
+打一个 tag 就会自动编译并发 Release —— 见下面「自动构建」。
 
 ## 使用指南
 
@@ -180,8 +197,30 @@ CU-ModUpdater/
 │   ├── ModBrowserForm.cs            # Mod 浏览器
 │   ├── SettingsForm.cs              # 设置
 │   └── ModSourceDialog.cs           # 来源配置
+├── tools/                           # 开发调试脚本（非程序组成部分）
+│   ├── scan_local.ps1               # 独立扫描器，交叉验证 PluginScanner
+│   ├── check_full.py                # 全量核对线上真实版本/来源
+│   └── check_deep.py                # 单仓库深查
+├── .github/workflows/build.yml      # CI：打 tag 自动编译 + 发 Release
 └── docs/                            # 截图
 ```
+
+## 自动构建
+
+打 tag 即发版，不需要本地环境：
+
+```bash
+git tag v1.2.0
+git push origin v1.2.0      # → Actions 自动编译 → 挂 exe 到 Release
+```
+
+工作流 [`.github/workflows/build.yml`](.github/workflows/build.yml) 做三件事：
+
+1. `windows-latest` + .NET 8 SDK，按 `build.bat` 完全相同的参数发布单文件 exe
+2. **校验产物大小**（低于 300KB 直接判失败 —— 那是没打包的 apphost，不是成品）
+3. tag 触发时把 exe 挂到对应 Release，并自动生成变更说明
+
+手动触发（`workflow_dispatch`）只编译并上传 artifact，不会发 Release —— 用来验证改动能不能构建通过。
 
 ## 数据来源与致谢
 
