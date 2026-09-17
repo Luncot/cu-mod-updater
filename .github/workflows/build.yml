@@ -1,0 +1,70 @@
+name: build
+
+on:
+  push:
+    tags: ['v*']        # 打 tag 即发版：编译 + 打包单文件 exe + 挂到 Release
+  workflow_dispatch:     # 手动触发：只编译并传 artifact，不发 Release
+
+permissions:
+  contents: write        # 发 Release 需要
+
+jobs:
+  build:
+    # WinForms + WPF(WIC) 需要 Windows runner
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 .NET 8 SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      # 用 .github/ci-nuget.config：仓库根的 nuget.config 里带着作者本机的
+      # fallbackPackageFolders 路径，在 runner 上不存在
+      - name: 还原依赖
+        run: dotnet restore -r win-x64 --configfile .github/ci-nuget.config
+
+      - name: 编译
+        run: dotnet build -c Release --no-restore
+
+      # 和 build.bat 完全一致的发布参数：
+      # 单文件 + 框架依赖（约 1MB）—— 需要用户机器上有 .NET 8 桌面运行时
+      - name: 发布单文件 exe
+        run: >
+          dotnet publish -c Release -r win-x64 --self-contained false
+          -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true
+          --no-restore -o publish
+
+      - name: 确认产物
+        shell: pwsh
+        run: |
+          $f = Get-Item publish/CU-ModUpdater.exe
+          "exe = {0:N0} 字节 ({1:N0} KB)" -f $f.Length, ($f.Length / 1KB) | Write-Host
+          # 单文件框架依赖版约 1MB；如果只有 100 多 KB 说明打的是未打包的启动器
+          if ($f.Length -lt 300KB) { throw "产物异常：疑似未打包的 apphost" }
+
+      - name: 上传 artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: CU-ModUpdater-${{ github.ref_name }}
+          path: publish/CU-ModUpdater.exe
+
+      - name: 发布到 Release（仅 tag 触发）
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: publish/CU-ModUpdater.exe
+          generate_release_notes: true
+          body: |
+            ## CU Mod 更新器 ${{ github.ref_name }}
+
+            Casualties: Unknown 的 BepInEx Mod 管理器。
+
+            **运行要求**：Windows 10 1809+ / Windows 11，以及
+            [.NET 8 桌面运行时](https://dotnet.microsoft.com/download/dotnet/8.0)
+            （x64，选 "Desktop Runtime"）。
+
+            下载下面的 `CU-ModUpdater.exe`，双击即可运行。
+            详细说明见 [README](https://github.com/Luncot/cu-mod-updater#readme)。
