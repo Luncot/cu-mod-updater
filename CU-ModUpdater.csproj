@@ -1,0 +1,59 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>CU-ModUpdater</AssemblyName>
+    <RootNamespace>CUModUpdater</RootNamespace>
+    <Version>1.1.0</Version>
+    <Authors>CasualtiesUnknown Modding Community</Authors>
+    <Description>Casualties Unknown Demo BepInEx Mod 更新器 - 一键连接 Nexus Mods 和 GitHub</Description>
+    <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
+    <ApplicationDefaultFont>Microsoft YaHei UI, 9pt</ApplicationDefaultFont>
+    <!-- 开 WPF 只为了用它的 WIC 解码器读 WebP：
+         N 网图片 CDN 无论 Accept 头怎么给都返回 WebP，而 WinForms 的
+         GDI+ 解不了 WebP（Image.FromStream 直接抛），表现为「图片加载失败」。
+         WIC 在 Win10 1809+/Win11 上自带 WebP 解码（Webp Image Extensions）。 -->
+    <UseWPF>true</UseWPF>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Mono.Cecil" Version="0.11.5" />
+  </ItemGroup>
+
+  <!--
+    UseWPF 会把 SDK 的隐式 using 换成 WPF 那一套：
+      · 少了 System.IO / System.Net.Http / System.Drawing / System.Windows.Forms
+      · 多了 System.Windows.Media（其 Color/Point/Size 与 System.Drawing 同名，会产生歧义）
+    所以这里显式钉死两边各要什么，避免在十几个文件里逐个补 using。
+  -->
+  <ItemGroup>
+    <Using Include="System.IO" />
+    <Using Include="System.Net.Http" />
+    <Using Include="System.Drawing" />
+    <Using Include="System.Windows.Forms" />
+    <Using Include="System.Collections.Generic" />
+    <Using Include="System.Linq" />
+    <Using Include="System.Threading" />
+    <Using Include="System.Threading.Tasks" />
+    <Using Remove="System.Windows" />
+    <Using Remove="System.Windows.Controls" />
+    <Using Remove="System.Windows.Data" />
+    <Using Remove="System.Windows.Documents" />
+    <Using Remove="System.Windows.Input" />
+    <Using Remove="System.Windows.Media" />
+    <Using Remove="System.Windows.Media.Imaging" />
+    <Using Remove="System.Windows.Navigation" />
+    <Using Remove="System.Windows.Shapes" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Update="modupdater_config.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+  </ItemGroup>
+
+</Project>

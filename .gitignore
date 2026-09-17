@@ -1,0 +1,26 @@
+# 构建产物
+bin/
+obj/
+publish/
+*.user
+*.suo
+.vs/
+
+# 运行时产生的抓取缓存
+_fallback/
+_meta/
+
+# 本机配置与日志（可能含 Nexus API Key / GitHub Token，绝不能提交）
+modupdater_config.json
+trace.log
+*.log
+
+# 本机扫描输出与临时文件
+local_mods.json
+scan_out.json
+_*
+!docs/_*
+
+# Rider / VS Code
+.idea/
+.vscode/
