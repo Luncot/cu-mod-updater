@@ -58,9 +58,7 @@ jobs:
           files: publish/CU-ModUpdater.exe
           generate_release_notes: true
           body: |
-            ## CU Mod 更新器 ${{ github.ref_name }}
-
-            Casualties: Unknown 的 BepInEx Mod 管理器。
+            ---
 
             **运行要求**：Windows 10 1809+ / Windows 11，以及
             [.NET 8 桌面运行时](https://dotnet.microsoft.com/download/dotnet/8.0)

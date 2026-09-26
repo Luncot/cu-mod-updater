@@ -44,6 +44,29 @@ internal static class Program
     [STAThread]
     static int Main(string[] args)
     {
+        // --reset-meta 命令行模式：删掉本地元数据缓存，复现「首次运行」状态。
+        // 排查「扫不出来源 / 满屏无源」时用 —— 有缓存的机器看不出这个问题，
+        // 因为元数据早就在本地了。
+        if (args.Length >= 1 && args[0] == "--reset-meta")
+        {
+            var dir = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+                "CU-ModUpdater");
+            var cache = Path.Combine(dir, "casualties_manageable.json");
+            if (File.Exists(cache))
+            {
+                Console.WriteLine($"已删除元数据缓存（{new FileInfo(cache).Length / 1024 / 1024.0:F2} MB）");
+                File.Delete(cache);
+            }
+            else
+            {
+                Console.WriteLine("元数据缓存本来就不存在（已经是首次运行状态）");
+            }
+            Console.WriteLine($"路径: {cache}");
+            Console.WriteLine("下次启动会重新下载（约 20 秒），可用来复现社区用户遇到的「没来源」场景");
+            return 0;
+        }
+
         // --scan 命令行模式：扫描插件输出 JSON（供脚本批量比对用）
         if (args.Length >= 1 && args[0] == "--scan")
         {
@@ -100,6 +123,19 @@ internal static class Program
         // 用来核对富文本清洗（BBCode/HTML）与字段补全是否符合预期
         if (args.Length >= 2 && args[0] == "--preview")
         {
+            // 先确保元数据可用（首次运行会触发下载），并打印走的是哪个通道
+            using (var cm = new Services.CasualtiesManageableService())
+            {
+                cm.OnLog = m => Console.WriteLine($"[meta] {m}");
+                if (!cm.EnsureLoadedAsync().GetAwaiter().GetResult())
+                {
+                    Console.WriteLine("元数据不可用：" + Services.CasualtiesManageableService.LastDownloadError);
+                    return 1;
+                }
+            }
+            Console.WriteLine($"[元数据] 通道={Services.CasualtiesManageableService.LastChannel}  " +
+                $"条数={Services.CasualtiesManageableService.GetAllEntries().Count}");
+
             var entry = Services.CasualtiesManageableService.FindByModId(args[1]);
             if (entry == null)
             {
@@ -179,8 +215,11 @@ internal static class Program
             Console.WriteLine($"[scan] {mods.Count} mods");
 
             using var cm = new Services.CasualtiesManageableService();
+            cm.OnLog = m => Console.WriteLine($"[meta] {m}");
             var metaOk = await cm.EnsureLoadedAsync();
-            Console.WriteLine($"[meta] available={metaOk}");
+            Console.WriteLine($"[meta] available={metaOk}  channel={Services.CasualtiesManageableService.LastChannel}" +
+                (string.IsNullOrEmpty(Services.CasualtiesManageableService.LastDownloadError)
+                    ? "" : $"  error={Services.CasualtiesManageableService.LastDownloadError}"));
 
             var github = new GitHubChecker(string.IsNullOrEmpty(config.GitHubToken) ? null : config.GitHubToken);
             NexusChecker? nexus = string.IsNullOrEmpty(config.NexusApiKey)

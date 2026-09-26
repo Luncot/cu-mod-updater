@@ -1,4 +1,4 @@
-<Project Sdk="Microsoft.NET.Sdk">
+﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
@@ -8,7 +8,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <AssemblyName>CU-ModUpdater</AssemblyName>
     <RootNamespace>CUModUpdater</RootNamespace>
-    <Version>1.1.0</Version>
+    <Version>1.1.1</Version>
     <Authors>CasualtiesUnknown Modding Community</Authors>
     <Description>Casualties Unknown Demo BepInEx Mod 更新器 - 一键连接 Nexus Mods 和 GitHub</Description>
     <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>

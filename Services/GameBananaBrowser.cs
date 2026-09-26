@@ -28,7 +28,7 @@ public class GameBananaBrowser : IDisposable
         // GB 的 API 偶尔慢，8 秒会把能成功的请求掐死在半路
         _client = new HttpClient { Timeout = TimeSpan.FromSeconds(20) };
         // 图片 CDN / API 都会校验 UA 和 Referer，必须带上，否则被拒
-        _client.DefaultRequestHeaders.UserAgent.ParseAdd("CU-ModUpdater/1.1.0 (+https://github.com)");
+        _client.DefaultRequestHeaders.UserAgent.ParseAdd("CU-ModUpdater/1.1.1 (+https://github.com)");
         _client.DefaultRequestHeaders.Referrer = new Uri("https://gamebanana.com/");
     }
 

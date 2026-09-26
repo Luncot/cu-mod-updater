@@ -1,4 +1,4 @@
-using System.Diagnostics;
+﻿using System.Diagnostics;
 using System.Drawing.Imaging;
 using CUModUpdater.Models;
 using CUModUpdater.Services;
@@ -664,9 +664,11 @@ public class ModBrowserForm : Form
 
             if (installed != null)
             {
-                mod.InstalledVersion = installed.CurrentVersion;
+                mod.InstalledVersion = installed.DisplayVersion;
+                // 同样用 CompareVersion 而不是 CurrentVersion：非插件 dll 只有
+                // 程序集版本，当前者为空时这里会把「版本没读到」误判成「有更新」
                 mod.InstallStatus = !string.IsNullOrEmpty(mod.Version) &&
-                    VersionHelper.IsNewer(mod.Version, installed.CurrentVersion)
+                    VersionHelper.IsNewer(mod.Version, installed.CompareVersion)
                     ? "可更新" : "已安装";
             }
             else
@@ -1083,7 +1085,7 @@ public class ModBrowserForm : Form
             http.Timeout = TimeSpan.FromSeconds(15);
             // 各平台 CDN 都会拒绝无 UserAgent 的请求，必须带上
             http.DefaultRequestHeaders.UserAgent.ParseAdd(
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) CU-ModUpdater/1.1.0");
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) CU-ModUpdater/1.1.1");
             // ⚠️ Referer 要跟着图源走：
             //   · GameBanana 的 CDN 校验 Referer，必须给 gamebanana.com
             //   · Nexus 的 CDN（staticdelivery.nexusmods.com）**会因为

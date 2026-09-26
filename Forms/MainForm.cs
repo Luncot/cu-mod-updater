@@ -184,6 +184,7 @@ public class MainForm : Form
             try
             {
                 using var cm = new Services.CasualtiesManageableService();
+                cm.OnLog = Log;      // 让「走哪个通道下载元数据」出现在日志里
                 await cm.EnsureLoadedAsync();
             }
             catch { /* 后台预热失败不影响主流程 */ }
@@ -700,6 +701,13 @@ public class MainForm : Form
         _modsVersion++; // 使分组缓存失效
 
         // 自动配置：根据精选数据库匹配 GUID，免去手动填写
+        //
+        // ⚠️ 自动识别依赖社区元数据。首次运行时元数据（2.7MB）可能还在后台下载，
+        // 这时候跑来配来源会**一个都识别不出**，用户看到满屏「— 无源」，
+        // 以为程序坏了（社区反馈「按了扫描插件，就扫出俩有来源」）。
+        // 所以：没有元数据就先取，取不到再继续（至少错误信息是真实的）。
+        await EnsureMetadataForAutoConfigAsync();
+
         var autoConfigured = ConfigManager.AutoConfigureAll(_config, _mods);
         if (autoConfigured > 0)
             Log($"✓ 自动识别了 {autoConfigured} 个 Mod 的更新源（来自精选数据库）");
@@ -832,9 +840,24 @@ public class MainForm : Form
         // 就算拿不到也继续，让每个 mod 各自报错，至少错误信息是真实的。
         using (var cm = new Services.CasualtiesManageableService())
         {
+            cm.OnLog = Log;
             var metaOk = await cm.EnsureLoadedAsync();
-            Program.Trace($"CheckUpdates: meta={metaOk}");
-            Log(metaOk ? "✓ 官方元数据已就绪" : "⚠ 元数据不可用（缓存缺失且下载失败），N 网来源的检查结果会不准");
+            Program.Trace($"CheckUpdates: meta={metaOk} channel={Services.CasualtiesManageableService.LastChannel} " +
+                          $"error={Services.CasualtiesManageableService.LastDownloadError}");
+            if (metaOk)
+            {
+                var ch = Services.CasualtiesManageableService.LastChannel;
+                Log(string.IsNullOrEmpty(ch)
+                    ? "✓ 官方元数据已就绪（来自本地缓存）"
+                    : $"✓ 官方元数据已就绪（下载通道: {ch}，共 {Services.CasualtiesManageableService.GetAllEntries().Count} 条）");
+            }
+            else
+            {
+                // 说清楚「为什么全是无源」——多半是元数据没下来，而不是 mod 的问题
+                Log("⚠ 元数据不可用，N 网来源的自动识别与版本检查会不准");
+                var err = Services.CasualtiesManageableService.LastDownloadError;
+                if (!string.IsNullOrEmpty(err)) Log("  " + err);
+            }
         }
 
         Program.Trace("CheckUpdates: CheckAllAsync begin");
@@ -1361,6 +1384,7 @@ public class MainForm : Form
         {
             case UpdateStatus.UpdateAvailable: return "更新";
             case UpdateStatus.NoSource: return "配置";
+            case UpdateStatus.Library: return "—";     // 库文件不单独更新
             case UpdateStatus.Error:
             case UpdateStatus.UpdateFailed: return "重试";
             case UpdateStatus.Checking:
@@ -1429,6 +1453,7 @@ public class MainForm : Form
                     UpdateStatus.Error or UpdateStatus.UpdateFailed => Theme.Error,
                     UpdateStatus.Disabled => Theme.TextDim,
                     UpdateStatus.LocalMod => Color.FromArgb(140, 120, 190),
+                    UpdateStatus.Library => Color.FromArgb(120, 120, 130),
                     UpdateStatus.Updated => Theme.Success,
                     _ => Theme.TextDim,
                 };
@@ -1701,6 +1726,40 @@ public class MainForm : Form
             try { UpdateModRow(mod); } catch { }   // 复选框弹回真实状态
             return false;
         }
+    }
+
+    /// <summary>
+    /// 扫描后的自动识别之前，确保元数据可用。
+    ///
+    /// 有缓存（哪怕过期）→ 立刻返回，不阻塞；
+    /// 完全没缓存（首次运行）→ 等一次下载（约 20~30 秒），状态栏给明确提示，
+    /// 用户知道"在等什么"，而不是看着满屏「无源」发呆。
+    /// </summary>
+    private async Task EnsureMetadataForAutoConfigAsync()
+    {
+        if (Services.CasualtiesManageableService.IsAvailable) return;
+
+        _toolStripStatus.Text = "首次运行：正在获取 Mod 元数据（约 20 秒）...";
+        Log("首次运行需要下载社区元数据（约 2.7MB），用于自动识别每个 Mod 的更新来源");
+
+        using var cm = new Services.CasualtiesManageableService();
+        cm.OnLog = Log;
+        var ok = await cm.EnsureLoadedAsync();
+
+        if (ok)
+        {
+            Log($"✓ 元数据就绪（{Services.CasualtiesManageableService.GetAllEntries().Count} 条）");
+        }
+        else
+        {
+            Log("⚠ 元数据下载失败，本次扫描无法自动识别来源");
+            var err = Services.CasualtiesManageableService.LastDownloadError;
+            if (!string.IsNullOrEmpty(err)) Log("  " + err);
+        }
+
+        // 写进 trace.log：社区支持时让用户发这一个文件就能看出「元数据到底通没通」
+        Program.Trace($"meta(auto-config): ok={ok} channel={Services.CasualtiesManageableService.LastChannel} " +
+                      $"error={Services.CasualtiesManageableService.LastDownloadError}");
     }
 
     /// <summary>刷新状态栏的「X/Y 已启用」计数（开关后立即更新，不等下次重建）</summary>
@@ -2580,6 +2639,9 @@ public class MainForm : Form
     {
         if (InvokeRequired)
         {
+            // 句柄还没创建时 BeginInvoke 会抛 —— 启动阶段的后台任务
+            // （元数据预热等）会踩到，直接丢弃这条日志比炸掉任务好
+            if (!IsHandleCreated) return;
             this.BeginInvoke(() => Log(msg));
             return;
         }

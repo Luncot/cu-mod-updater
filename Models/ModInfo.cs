@@ -17,6 +17,7 @@ public enum UpdateStatus
     Updated,          // 已更新
     UpdateFailed,     // 更新失败
     LocalMod,         // 自有/本地 Mod（元数据未收录，无需更新）
+    Library,          // 库文件（无 [BepInPlugin]，随宿主 Mod 附带，不单独更新）
 }
 
 /// <summary>
@@ -70,10 +71,20 @@ public class ModInfo
     /// <summary>是否为有效的 BepInEx 插件（有 BepInPlugin 属性）</summary>
     public bool IsBepInExPlugin => !string.IsNullOrEmpty(PluginGuid);
 
+    /// <summary>
+    /// 用于版本比较的「当前版本」—— **必须和界面上那一列显示的是同一个值**。
+    ///
+    /// 优先 BepInPlugin 里声明的版本；没有就回退到程序集版本（PE 头里的
+    /// AssemblyVersion）。非插件 dll（BepInEx.dll 本体、纯库）没有 BepInPlugin
+    /// 属性，只能靠后者。
+    /// </summary>
+    public string CompareVersion =>
+        !string.IsNullOrEmpty(CurrentVersion) ? CurrentVersion :
+        !string.IsNullOrEmpty(AssemblyVersion) ? AssemblyVersion : "";
+
     /// <summary>显示用的版本（优先使用 BepInPlugin 版本，回退到程序集版本）</summary>
     public string DisplayVersion =>
-        !string.IsNullOrEmpty(CurrentVersion) ? CurrentVersion :
-        !string.IsNullOrEmpty(AssemblyVersion) ? AssemblyVersion : "未知";
+        !string.IsNullOrEmpty(CompareVersion) ? CompareVersion : "未知";
 
     /// <summary>状态文字</summary>
     public string StatusText => Status switch
@@ -90,6 +101,7 @@ public class ModInfo
         UpdateStatus.Updated => "✓ 已更新",
         UpdateStatus.UpdateFailed => "✗ 失败",
         UpdateStatus.LocalMod => "◈ 自有",
+        UpdateStatus.Library => "▫ 库文件",
         _ => ""
     };
 
@@ -180,14 +192,28 @@ public class ModInfo
     /// <summary>目录节点的递归文件集（含子目录）——批量开关与计数用；普通文件行不使用</summary>
     public List<ModInfo> FolderAllFiles { get; set; } = new();
 
-    /// <summary>版本比较：当前版本是否小于最新版本</summary>
+    /// <summary>
+    /// 版本比较：当前版本是否小于最新版本
+    ///
+    /// ⚠️ 比较基准必须用 <see cref="CompareVersion"/>（= 界面显示的那个值），
+    /// 不能直接用 CurrentVersion。社区反馈过的 bug：
+    /// BepInEx 本体（非插件 dll，只有程序集版本）当前/最新两列都显示 5.4.23.5，
+    /// 状态却是「可更新」—— 因为 CurrentVersion 为空时这里直接 `return true`，
+    /// 而列里显示的是回退值 AssemblyVersion。
+    /// 同一行里「显示一样、结论不同」，用户只会觉得程序在瞎报。
+    /// </summary>
     public bool HasUpdate
     {
         get
         {
             if (string.IsNullOrEmpty(LatestVersion)) return false;
-            if (string.IsNullOrEmpty(CurrentVersion)) return true;
-            return VersionHelper.IsNewer(LatestVersion, CurrentVersion);
+
+            var current = CompareVersion;
+            // 真的读不到任何版本信息时才保守地当作「有更新」，
+            // 并在界面上靠「当前版本 = 未知」把这个前提暴露出来
+            if (string.IsNullOrEmpty(current)) return true;
+
+            return VersionHelper.IsNewer(LatestVersion, current);
         }
     }
 }

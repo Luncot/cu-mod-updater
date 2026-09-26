@@ -51,6 +51,21 @@ public class UpdateManager : IDisposable
     /// </summary>
     public async Task CheckUpdateAsync(ModInfo mod, ModSource source)
     {
+        // ── 没有 [BepInPlugin] 的 dll：不是插件，是随宿主 Mod 附带的库 ──
+        // BepInEx 只加载带该属性的程序集，所以 plugins 里的 LiteNetLib.dll /
+        // 0Harmony.dll / Mono.Cecil.dll / BepInEx.dll 本体这些永远不会被当插件加载。
+        // 它们只有程序集版本，拿它去比「宿主 Mod 的发行号」必然判成可更新
+        // （如 LiteNetLib 1.3.5.0 → 4.0.1），而点更新装进来的是整个 Mod 而不是这个库。
+        // 所以直接跳过比对，界面显示「▫ 库文件」。
+        if (!mod.IsBepInExPlugin && !mod.IsDataMod)
+        {
+            mod.Status = UpdateStatus.Library;
+            mod.LatestVersion = "";
+            mod.DownloadUrl = "";
+            mod.LastChecked = DateTime.Now;
+            return;
+        }
+
         mod.Status = UpdateStatus.Checking;
         mod.LastError = "";
 
@@ -141,23 +156,28 @@ public class UpdateManager : IDisposable
             mod.ReleaseNotes = release.ReleaseNotes;
 
             // 版本比较
+            // ⚠️ 基准用 mod.CompareVersion（= 界面「当前版本」列显示的值），
+            // 不要用 mod.CurrentVersion：非插件 dll（BepInEx 本体、纯库）没有
+            // BepInPlugin 版本，CurrentVersion 为空但列里显示的是回退的程序集版本，
+            // 于是出现「当前 5.4.23.5 / 最新 5.4.23.5 / 状态却是可更新」的自相矛盾。
             if (string.IsNullOrEmpty(release.Version))
             {
                 mod.Status = UpdateStatus.Unknown;
             }
-            else if (string.IsNullOrEmpty(mod.CurrentVersion))
+            else if (string.IsNullOrEmpty(mod.CompareVersion))
             {
+                // 本地完全读不到版本 → 保守当作有更新（界面上会显示「当前版本: 未知」）
                 mod.Status = UpdateStatus.UpdateAvailable;
             }
-            else if (VersionHelper.IsNewer(release.Version, mod.CurrentVersion))
+            else if (VersionHelper.IsNewer(release.Version, mod.CompareVersion))
             {
                 mod.Status = UpdateStatus.UpdateAvailable;
-                OnLog?.Invoke($"  {mod.Name}: {mod.CurrentVersion} -> {release.Version} (有更新)");
+                OnLog?.Invoke($"  {mod.Name}: {mod.CompareVersion} -> {release.Version} (有更新)");
             }
             else
             {
                 mod.Status = UpdateStatus.UpToDate;
-                OnLog?.Invoke($"  {mod.Name}: {mod.CurrentVersion} (已最新)");
+                OnLog?.Invoke($"  {mod.Name}: {mod.CompareVersion} (已最新)");
             }
         }
         catch (Exception ex)

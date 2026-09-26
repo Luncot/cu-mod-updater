@@ -12,8 +12,44 @@ namespace CUModUpdater.Services;
 /// </summary>
 public class CasualtiesManageableService : IDisposable
 {
-    private static readonly string DataUrl =
-        "https://raw.githubusercontent.com/jimmyking9999999/Metadata-generator/main/nexusmods.json";
+    /// <summary>
+    /// 元数据下载通道（**按实测可用性排序，逐个尝试**）。
+    ///
+    /// ⚠️ 原来只有 raw.githubusercontent.com 一个通道，而**国内无代理时它是连不上的**
+    /// （实测 TLS 握手超时）。后果不是小毛病：元数据拿不到 → GUID → N 网来源
+    /// 的自动识别整体失效 → 满屏「无源」，用户以为程序坏了（社区反馈
+    /// 「按了扫描插件，就扫出俩有来源」就是这个）。
+    ///
+    /// 实测（2026-09-27，无代理环境）：
+    ///   api.github.com     ✓ 2.71MB / 22 秒      ← 排第一
+    ///   cdn.jsdelivr.net   时好时坏
+    ///   ghproxy.net        ✓ 但很慢（97 秒）     ← 放后面
+    ///   raw.github...      ✗ 握手超时
+    ///
+    /// API 通道用 `Accept: application/vnd.github.raw` 直接拿原文，
+    /// 匿名限额 60 次/小时对「每小时刷一次」完全够用。
+    /// </summary>
+    private static readonly (string Name, string Url, string? Accept)[] DataChannels =
+    {
+        ("GitHub API",
+         "https://api.github.com/repos/jimmyking9999999/Metadata-generator/contents/nexusmods.json",
+         "application/vnd.github.raw"),
+        ("jsDelivr CDN",
+         "https://cdn.jsdelivr.net/gh/jimmyking9999999/Metadata-generator@main/nexusmods.json",
+         null),
+        ("ghproxy 镜像",
+         "https://ghproxy.net/https://raw.githubusercontent.com/jimmyking9999999/Metadata-generator/main/nexusmods.json",
+         null),
+        ("raw.githubusercontent",
+         "https://raw.githubusercontent.com/jimmyking9999999/Metadata-generator/main/nexusmods.json",
+         null),
+    };
+
+    /// <summary>最近一次成功下载用的通道（UI 显示 / 排查用）</summary>
+    public static string LastChannel { get; private set; } = "";
+
+    /// <summary>最近一次下载失败的原因摘要（全部通道都失败时给用户一个准话）</summary>
+    public static string LastDownloadError { get; private set; } = "";
 
     private static readonly string CacheFile = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
@@ -93,10 +129,17 @@ public class CasualtiesManageableService : IDisposable
         public string? Text { get; set; }
     }
 
+    /// <summary>日志回调（主界面接过来显示「元数据走的哪个通道」）</summary>
+    public Action<string>? OnLog { get; set; }
+
     public CasualtiesManageableService()
     {
-        _client = new HttpClient { Timeout = TimeSpan.FromSeconds(15) };
-        _client.DefaultRequestHeaders.UserAgent.ParseAdd("CU-ModUpdater/1.1.0");
+        // ⚠️ 不要给 HttpClient 设 15 秒这种短超时：
+        // 元数据有 2.7MB，慢速网络上单次要 20~90 秒（实测 API 通道 22 秒、
+        // ghproxy 97 秒），客户端超时会把**本来能成功的下载**掐断。
+        // 现在各通道用各自的 CancellationToken(60s) 控制，客户端不设总超时。
+        _client = new HttpClient { Timeout = System.Threading.Timeout.InfiniteTimeSpan };
+        _client.DefaultRequestHeaders.UserAgent.ParseAdd("CU-ModUpdater/1.1.1");
     }
 
     /// <summary>
@@ -128,7 +171,7 @@ public class CasualtiesManageableService : IDisposable
         {
             try
             {
-                var json = await _client.GetStringAsync(DataUrl);
+                var json = await DownloadAsync();
                 var parsed = Parse(json);
                 if (parsed.Count == 0) throw new InvalidOperationException("元数据为空");
                 _staticEntries = parsed;
@@ -145,11 +188,59 @@ public class CasualtiesManageableService : IDisposable
         return _staticEntries != null;
     }
 
+    /// <summary>
+    /// 逐个通道试下载（每个通道都有独立超时，避免一个卡死拖垮整体）。
+    /// 返回**已校验可解析**的 JSON —— 中间可能被劫持/返回 HTML，
+    /// 所以必须 Parse 成功且条目数正常才算这个通道可用。
+    /// </summary>
+    private async Task<string> DownloadAsync()
+    {
+        var errors = new List<string>();
+
+        foreach (var (name, url, accept) in DataChannels)
+        {
+            try
+            {
+                using var req = new HttpRequestMessage(HttpMethod.Get, url);
+                if (!string.IsNullOrEmpty(accept)) req.Headers.Accept.ParseAdd(accept);
+
+                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(60));
+                using var resp = await _client.SendAsync(req, cts.Token);
+                resp.EnsureSuccessStatusCode();
+
+                var json = await resp.Content.ReadAsStringAsync(cts.Token);
+                if (json.Length < 10_000)
+                    throw new InvalidOperationException($"内容过短（{json.Length} 字节）");
+
+                var parsed = Parse(json);          // 顺手校验能不能解析
+                if (parsed.Count < 100)
+                    throw new InvalidOperationException($"解析出的条目太少（{parsed.Count}）");
+
+                LastChannel = name;
+                LastDownloadError = "";
+                OnLog?.Invoke($"✓ 元数据下载成功（通道: {name}，{parsed.Count} 条，" +
+                              $"{json.Length / 1024 / 1024.0:F1}MB）");
+                return json;
+            }
+            catch (Exception ex)
+            {
+                errors.Add($"{name}: {ex.Message}");
+                OnLog?.Invoke($"  通道「{name}」失败: {ex.Message}");
+            }
+        }
+
+        LastDownloadError =
+            "元数据下载全部通道失败（" + string.Join("；", errors) + "）。" +
+            "常见原因：网络无法访问 GitHub（raw.githubusercontent.com 在国内常被墙，" +
+            "程序已改走 api.github.com 备用通道）。已有缓存时程序会继续用旧数据。";
+        throw new InvalidOperationException(LastDownloadError);
+    }
+
     private async Task RefreshInBackgroundAsync()
     {
         try
         {
-            var json = await _client.GetStringAsync(DataUrl);
+            var json = await DownloadAsync();
             var parsed = Parse(json);
             if (parsed.Count == 0) return;
             _staticEntries = parsed;
