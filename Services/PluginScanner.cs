@@ -1,4 +1,4 @@
-using Mono.Cecil;
+﻿using Mono.Cecil;
 using CUModUpdater.Models;
 
 namespace CUModUpdater.Services;
@@ -312,79 +312,213 @@ public class PluginScanner
         };
     }
 
+    /// <summary>正式版 appid（2026-11-09 上线）</summary>
+    public const string OfficialAppId = "4576490";
+
+    /// <summary>Demo appid（作者已声明不再更新）</summary>
+    public const string DemoAppId = "4576510";
+
     /// <summary>
-    /// 检测当前安装的游戏是否为 Casualties Unknown Demo
+    /// 是否为游戏安装目录 —— 只要求 CasualtiesUnknown.exe 存在。
+    ///
+    /// 2026-11-09 正式版上线后，安装目录名从「Casualties Unknown Demo」变成
+    /// 「Casualties Unknown」，原先那批写死的候选路径一个都命中不了；
+    /// 而且正式版是干净安装（还没有 BepInEx），用「必须存在 BepInEx」当门槛
+    /// 会把刚买游戏的人全部挡在门外。所以这里只认 exe，
+    /// 「能不能用」交给 IsValidGamePath。
     /// </summary>
-    public static bool IsValidGamePath(string gamePath)
+    public static bool IsGameInstallDir(string? gamePath)
     {
         if (string.IsNullOrEmpty(gamePath) || !Directory.Exists(gamePath))
             return false;
-
-        // 检查是否有 CasualtiesUnknown.exe
-        if (!File.Exists(Path.Combine(gamePath, "CasualtiesUnknown.exe")))
-            return false;
-
-        // 检查是否有 BepInEx 目录
-        if (!Directory.Exists(Path.Combine(gamePath, "BepInEx")))
-            return false;
-
-        return true;
+        return File.Exists(Path.Combine(gamePath, "CasualtiesUnknown.exe"));
     }
 
     /// <summary>
-    /// 尝试自动检测游戏安装路径
+    /// 检测该路径是否「可直接使用」：游戏本体 + BepInEx 都在
     /// </summary>
-    public static string? AutoDetectGamePath()
+    public static bool IsValidGamePath(string gamePath)
     {
-        // 常见 Steam 安装路径
-        var steamPaths = new[]
-        {
-            @"D:\Steam\steamapps\common\Casualties Unknown Demo",
-            @"C:\Program Files (x86)\Steam\steamapps\common\Casualties Unknown Demo",
-            @"C:\Program Files\Steam\steamapps\common\Casualties Unknown Demo",
-            @"D:\SteamLibrary\steamapps\common\Casualties Unknown Demo",
-            @"E:\SteamLibrary\steamapps\common\Casualties Unknown Demo",
-        };
+        if (!IsGameInstallDir(gamePath)) return false;
+        return Directory.Exists(Path.Combine(gamePath, "BepInEx"));
+    }
 
-        foreach (var p in steamPaths)
-        {
-            if (IsValidGamePath(p))
-                return p;
-        }
+    /// <summary>
+    /// 判断某个安装目录是 Demo 还是正式版。
+    /// 首选 appmanifest 的 appid（唯一可靠），拿不到再退回目录名。
+    /// </summary>
+    public static bool IsDemoInstall(string? gamePath)
+    {
+        if (string.IsNullOrEmpty(gamePath)) return false;
 
-        // 尝试从注册表读取 Steam 安装路径
         try
         {
-            using var key = Microsoft.Win32.Registry.CurrentUser
-                .OpenSubKey(@"Software\Valve\Steam");
-            if (key?.GetValue("SteamPath") is string steamInstall)
+            // <common>\<installdir> → <steamapps>
+            var steamApps = Path.GetDirectoryName(Path.GetDirectoryName(
+                gamePath.TrimEnd(Path.DirectorySeparatorChar)));
+            var installdir = Path.GetFileName(gamePath.TrimEnd(Path.DirectorySeparatorChar));
+            if (!string.IsNullOrEmpty(steamApps) && Directory.Exists(steamApps))
             {
-                var candidate = Path.Combine(steamInstall, "steamapps", "common", "Casualties Unknown Demo");
-                if (IsValidGamePath(candidate))
-                    return candidate;
-
-                // 检查 Steam libraryfolders.vdf
-                var vdfPath = Path.Combine(steamInstall, "steamapps", "libraryfolders.vdf");
-                if (File.Exists(vdfPath))
-                {
-                    var content = File.ReadAllText(vdfPath);
-                    var matches = System.Text.RegularExpressions.Regex.Matches(
-                        content, @"""([^""]+)""", System.Text.RegularExpressions.RegexOptions.Compiled);
-                    for (int i = 0; i < matches.Count; i++)
-                    {
-                        var libPath = matches[i].Groups[1].Value;
-                        if (libPath.Contains(':') && Directory.Exists(libPath))
-                        {
-                            var candidate2 = Path.Combine(libPath, "steamapps", "common", "Casualties Unknown Demo");
-                            if (IsValidGamePath(candidate2))
-                                return candidate2;
-                        }
-                    }
-                }
+                var demoAcf = Path.Combine(steamApps, $"appmanifest_{DemoAppId}.acf");
+                if (File.Exists(demoAcf) && AcfInstallDir(demoAcf) == installdir)
+                    return true;
             }
         }
         catch { }
 
-        return null;
+        return Path.GetFileName(gamePath.TrimEnd(Path.DirectorySeparatorChar))
+                   .IndexOf("demo", StringComparison.OrdinalIgnoreCase) >= 0;
+    }
+
+    /// <summary>给人看的版本标签：正式版 / Demo</summary>
+    public static string GameEditionText(string? gamePath) =>
+        IsDemoInstall(gamePath) ? "Demo" : "正式版";
+
+    /// <summary>按路径去重加入列表（忽略大小写）</summary>
+    private static void AddUnique(List<string> list, string? path)
+    {
+        if (string.IsNullOrWhiteSpace(path)) return;
+        // 注册表里给的是 "d:/steam" 这种形式，必须归一化后比较，否则同一目录会被收两遍
+        var norm = path!.TrimEnd('\\', '/').Replace('/', '\\');
+        if (norm.Length < 3 || norm[1] != ':') return;   // 只接受带盘符的绝对路径
+        if (!list.Exists(x => string.Equals(x, norm, StringComparison.OrdinalIgnoreCase)))
+            list.Add(norm);
+    }
+
+    /// <summary>读取 appmanifest 里的 installdir</summary>
+    private static string? AcfInstallDir(string acfPath)
+    {
+        try
+        {
+            var m = System.Text.RegularExpressions.Regex.Match(
+                File.ReadAllText(acfPath), "\"installdir\"\\s+\"([^\"]+)\"");
+            return m.Success ? m.Groups[1].Value : null;
+        }
+        catch { return null; }
+    }
+
+    /// <summary>
+    /// 收集本机所有 Steam 库根目录（即包含 steamapps 的目录）。
+    /// 来源：注册表 SteamPath → 常见安装位置 → libraryfolders.vdf 里登记的库。
+    /// </summary>
+    private static List<string> CollectSteamLibraries()
+    {
+        var roots = new List<string>();
+
+        void AddRoot(string? p)
+        {
+            if (string.IsNullOrWhiteSpace(p)) return;
+            p = p.TrimEnd('\\', '/');
+            // 传进来的可能是库根，也可能直接是 Steam 安装根
+            foreach (var cand in new[] { p, Path.Combine(p, "Steam"), Path.Combine(p, "SteamLibrary") })
+            {
+                try { if (Directory.Exists(Path.Combine(cand, "steamapps"))) AddUnique(roots, cand); } catch { }
+            }
+        }
+
+        // ① 注册表（用户级 + 机器级，64/32 位都试）
+        foreach (var hive in new[] { Microsoft.Win32.Registry.CurrentUser, Microsoft.Win32.Registry.LocalMachine })
+        {
+            foreach (var sub in new[] { @"Software\Valve\Steam", @"SOFTWARE\WOW6432Node\Valve\Steam" })
+            {
+                try
+                {
+                    using var key = hive.OpenSubKey(sub);
+                    AddRoot(key?.GetValue("SteamPath") as string ?? key?.GetValue("InstallPath") as string);
+                }
+                catch { }
+            }
+        }
+
+        // ② 常见位置（不依赖注册表，覆盖便携/多盘装法）
+        foreach (var drive in new[] { "C", "D", "E", "F", "G" })
+        {
+            AddRoot($@"{drive}:\Steam");
+            AddRoot($@"{drive}:\SteamLibrary");
+            AddRoot($@"{drive}:\Games\Steam");
+        }
+        AddRoot(@"C:\Program Files (x86)\Steam");
+        AddRoot(@"C:\Program Files\Steam");
+
+        // ③ libraryfolders.vdf 里登记的其他库（可能在其他盘）
+        foreach (var root in roots.ToList())
+        {
+            var vdf = Path.Combine(root, "steamapps", "libraryfolders.vdf");
+            if (!File.Exists(vdf)) continue;
+            try
+            {
+                foreach (System.Text.RegularExpressions.Match m in System.Text.RegularExpressions.Regex.Matches(
+                             File.ReadAllText(vdf), "\"path\"\\s+\"([^\"]+)\""))
+                {
+                    var lib = m.Groups[1].Value.Replace(@"\\", @"\");
+                    if (lib.Length > 2 && Directory.Exists(lib)) AddUnique(roots, lib.TrimEnd('\\'));
+                }
+            }
+            catch { }
+        }
+
+        return roots.ToList();
+    }
+
+    /// <summary>
+    /// 枚举本机所有 Casualties Unknown 安装（正式版 / Demo 都可能存在）。
+    ///
+    /// 两条通道：① 读 appmanifest_*.acf 的 installdir（目录名改了也能认出来）；
+    /// ② 兜底扫 steamapps\common 下名字含 "casualties" 的目录。
+    /// </summary>
+    public static List<string> FindGameInstalls()
+    {
+        var found = new List<string>();
+
+        foreach (var lib in CollectSteamLibraries())
+        {
+            var common = Path.Combine(lib, "steamapps", "common");
+            if (!Directory.Exists(common)) continue;
+
+            // ① appmanifest
+            try
+            {
+                foreach (var acf in Directory.GetFiles(Path.Combine(lib, "steamapps"), "appmanifest_*.acf"))
+                {
+                    var dir = AcfInstallDir(acf);
+                    if (string.IsNullOrEmpty(dir)) continue;
+                    if (dir.IndexOf("casualt", StringComparison.OrdinalIgnoreCase) < 0) continue;
+                    var full = Path.Combine(common, dir);
+                    if (IsGameInstallDir(full)) AddUnique(found, full);
+                }
+            }
+            catch { }
+
+            // ② 目录名兜底
+            try
+            {
+                foreach (var d in Directory.GetDirectories(common))
+                {
+                    if (Path.GetFileName(d).IndexOf("casualt", StringComparison.OrdinalIgnoreCase) < 0) continue;
+                    if (IsGameInstallDir(d)) AddUnique(found, d);
+                }
+            }
+            catch { }
+        }
+
+        // 排序：正式版优先（Demo 已停止更新，作者明确不再维护）→ 装好 BepInEx 的优先 → 路径短的优先
+        return found
+            .OrderByDescending(p => (IsDemoInstall(p) ? 0 : 2)
+                                    + (Directory.Exists(Path.Combine(p, "BepInEx")) ? 1 : 0))
+            .ThenBy(p => p.Length)
+            .ToList();
+    }
+
+    /// <summary>诊断用：暴露收集到的 Steam 库根目录（--detect 用）</summary>
+    public static List<string> FindSteamLibrariesForDiagnostics() => CollectSteamLibraries();
+
+    /// <summary>
+    /// 尝试自动检测游戏安装路径。
+    /// 找不到时返回 null，由调用方决定是否让用户手选。
+    /// </summary>
+    public static string? AutoDetectGamePath()
+    {
+        var installs = FindGameInstalls();
+        return installs.Count > 0 ? installs[0] : null;
     }
 }

@@ -57,7 +57,7 @@
 |---|---|
 | 系统 | Windows 10 1809+ / Windows 11（需要 WIC 支持，用于解码 N 网的 WebP 预览图） |
 | 运行时 | [.NET 8 桌面运行时](https://dotnet.microsoft.com/download/dotnet/8.0)（x64，选 **Desktop Runtime**，免费） |
-| 游戏 | 已装 BepInEx 5（`BepInEx/plugins/` 目录存在） |
+| 游戏 | **正式版**（`Casualties Unknown`，2026-11-09 上线）或 **Demo**，且已装 BepInEx 5（`BepInEx/plugins/` 存在） |
 
 ### 方式一：下载现成 exe（推荐）
 
@@ -65,7 +65,8 @@
 
 - **单文件版**（约 1MB）：所有代码打包进一个 exe，但**依赖上面的 .NET 8 桌面运行时**
   （没有的话双击会提示缺失框架，装一次即可）
-- 首次启动会让你确认游戏路径，支持自动检测 Steam / 常见安装位置
+- 首次启动会**自动检测 Steam 库里的游戏安装**（正式版与 Demo 都能认出来，正式版优先）；
+  认错了就在「设置」里手选——只要那一层有 `CasualtiesUnknown.exe` 就行
 
 ### 方式二：从源码构建
 
@@ -129,11 +130,17 @@ dotnet publish -c Release -r win-x64 --self-contained false \
 除了 GUI，也支持无界面模式，方便脚本调用与排查问题：
 
 ```bash
-# 扫描插件并输出 JSON（供脚本批量比对）
-CU-ModUpdater.exe --scan "D:\Steam\steamapps\common\Casualties Unknown Demo"
+# 列出本机检到的所有游戏安装（正式版 / Demo）与自动选择结果 —— 排查「检测不到游戏」先跑这个
+CU-ModUpdater.exe --detect
+
+# 扫描插件并输出 JSON（供脚本批量比对；不填路径则用配置里的，再不行自动检测）
+CU-ModUpdater.exe --scan "E:\SteamLibrary\steamapps\common\Casualties Unknown"
 
 # 扫描 + 检查更新 + 打印结果（无 UI，冒烟测试用）
-CU-ModUpdater.exe --check "D:\Steam\steamapps\common\Casualties Unknown Demo"
+CU-ModUpdater.exe --check "E:\SteamLibrary\steamapps\common\Casualties Unknown"
+
+# 删掉社区元数据缓存，复现「首次运行」状态（验证来源识别是否依赖缓存）
+CU-ModUpdater.exe --reset-meta
 
 # 启动后直接打开 Mod 浏览器（可指定标签页: curated / github / nexus）
 CU-ModUpdater.exe --browser nexus

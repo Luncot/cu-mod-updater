@@ -152,7 +152,7 @@ public class MainForm : Form
         // 加载配置
         _config = ConfigManager.Load();
 
-        Text = "CU Mod 更新器 - Casualties Unknown Demo";
+        Text = "CU Mod 更新器 - Casualties Unknown";
         Size = new Size(1100, 700);
         MinimumSize = new Size(900, 550);
         StartPosition = FormStartPosition.CenterScreen;
@@ -623,7 +623,7 @@ public class MainForm : Form
         if (PluginScanner.IsValidGamePath(_config.GamePath))
         {
             _scanner = new PluginScanner(_config.GamePath);
-            _gamePathLabel.Text = "游戏路径: " + _config.GamePath;
+            _gamePathLabel.Text = $"游戏路径: {_config.GamePath}（{PluginScanner.GameEditionText(_config.GamePath)}）";
 
             var github = new GitHubChecker(
                 string.IsNullOrEmpty(_config.GitHubToken) ? null : _config.GitHubToken);
@@ -641,7 +641,16 @@ public class MainForm : Form
         }
         else
         {
-            _gamePathLabel.Text = "⚠ 游戏路径无效，请点击设置配置正确路径";
+            // 分两种情况：找到了游戏但没装 BepInEx / 真的没找到
+            if (PluginScanner.IsGameInstallDir(_config.GamePath))
+            {
+                _gamePathLabel.Text = $"⚠ 已找到游戏（{PluginScanner.GameEditionText(_config.GamePath)}），但未安装 BepInEx：{_config.GamePath}";
+                Log("⚠ 该目录没有 BepInEx —— 请先安装 BepInEx 5.4.23.5（x64）再点扫描");
+            }
+            else
+            {
+                _gamePathLabel.Text = "⚠ 游戏路径无效，请点击设置配置正确路径";
+            }
             _gamePathLabel.ForeColor = Theme.Warning;
         }
     }
@@ -2351,26 +2360,35 @@ public class MainForm : Form
     {
         using var dlg = new FolderBrowserDialog
         {
-            Description = "选择 Casualties Unknown Demo 游戏目录",
+            Description = "选择 Casualties Unknown 游戏目录（正式版或 Demo 都行）",
             SelectedPath = _config.GamePath,
         };
         if (dlg.ShowDialog() == DialogResult.OK)
         {
+            // 只校验 exe：正式版是干净安装（还没 BepInEx），不能因此把人挡在门外
+            if (!PluginScanner.IsGameInstallDir(dlg.SelectedPath))
+            {
+                MessageBox.Show(
+                    "该路径下没有 CasualtiesUnknown.exe。\n" +
+                    "请选择游戏根目录（里面有 CasualtiesUnknown.exe 和 CasualtiesUnknown_Data 的那一层）。",
+                    "路径无效", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+
+            _config.GamePath = dlg.SelectedPath;
+            ConfigManager.Save(_config);
+            InitServices();
+
             if (PluginScanner.IsValidGamePath(dlg.SelectedPath))
             {
-                _config.GamePath = dlg.SelectedPath;
-                ConfigManager.Save(_config);
-                InitServices();
-                _gamePathLabel.Text = "游戏路径: " + _config.GamePath;
-                _gamePathLabel.ForeColor = Theme.TextDim;
                 _ = ScanAsync();
             }
             else
             {
                 MessageBox.Show(
-                    "该路径未找到 CasualtiesUnknown.exe 或 BepInEx 目录。\n" +
-                    "请确认选择了正确的游戏安装目录。",
-                    "路径无效", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    "路径已保存，但这个目录里没有 BepInEx，暂时扫不到任何插件。\n\n" +
+                    "请先安装 BepInEx 5.4.23.5（x64）到该目录，装好后回来看「扫描插件」。",
+                    "需要先安装 BepInEx", MessageBoxButtons.OK, MessageBoxIcon.Information);
             }
         }
     }
@@ -2718,7 +2736,7 @@ public class MainForm : Form
     {
         MessageBox.Show(
             "CU Mod 更新器 v1.0.0\n" +
-            "Casualties Unknown Demo BepInEx Mod 更新工具\n\n" +
+            "Casualties Unknown BepInEx Mod 更新工具\n\n" +
             "功能:\n" +
             "  • 扫描 BepInEx 插件目录，解析 BepInPlugin 版本信息\n" +
             "  • 连接 GitHub Releases 检查最新版本\n" +

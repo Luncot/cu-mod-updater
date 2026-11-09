@@ -102,8 +102,8 @@ public class ConfigManager
     /// </summary>
     private static ModUpdaterConfig CreateDefaultConfig()
     {
-        var gamePath = PluginScanner.AutoDetectGamePath()
-            ?? @"D:\Steam\steamapps\common\Casualties Unknown Demo";
+        // 找不到就留空：由界面提示用户手选（正式版目录名与 Demo 不同，别再写死）
+        var gamePath = PluginScanner.AutoDetectGamePath() ?? "";
 
         var config = new ModUpdaterConfig
         {

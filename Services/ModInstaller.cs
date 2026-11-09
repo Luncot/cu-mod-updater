@@ -28,7 +28,7 @@ public class ModInstaller : IDisposable
         });
         _httpClient.Timeout = TimeSpan.FromMinutes(5);
         // UA 版本号与 GameBananaBrowser 保持一致（GameBanana CDN 会校验 UA）
-        _httpClient.DefaultRequestHeaders.UserAgent.ParseAdd("CU-ModUpdater/1.1.1 (+https://github.com)");
+        _httpClient.DefaultRequestHeaders.UserAgent.ParseAdd("CU-ModUpdater/1.2.0 (+https://github.com)");
         // GameBanana 下载链接（gamebanana.com/dl/xxx）302 重定向后可能校验 Referer
         _httpClient.DefaultRequestHeaders.Referrer = new Uri("https://gamebanana.com/");
     }

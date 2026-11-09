@@ -7,8 +7,13 @@ namespace CUModUpdater.Models;
 /// </summary>
 public class ModUpdaterConfig
 {
-    /// <summary>游戏安装路径</summary>
-    public string GamePath { get; set; } = @"D:\Steam\steamapps\common\Casualties Unknown Demo";
+    /// <summary>
+    /// 游戏安装路径。
+    /// 留空表示「还没探测过」——首次启动由 PluginScanner.AutoDetectGamePath() 填。
+    /// 2026-11-09 正式版上线后目录名从「Casualties Unknown Demo」改为
+    /// 「Casualties Unknown」，所以这里不能再写死任何默认值。
+    /// </summary>
+    public string GamePath { get; set; } = "";
 
     /// <summary>Nexus Mods API Key（在 nexusmods.com -> 个人设置 -> API 中生成）</summary>
     public string NexusApiKey { get; set; } = "";

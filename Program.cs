@@ -7,7 +7,7 @@ namespace CUModUpdater;
 
 /// <summary>
 /// CU Mod 更新器入口
-/// Casualties Unknown Demo BepInEx Mod 更新器
+/// Casualties Unknown（正式版 / Demo）BepInEx Mod 更新器
 /// 一键连接 Nexus Mods 和 GitHub 检查并安装 Mod 更新
 ///
 /// 命令行模式:
@@ -64,6 +64,27 @@ internal static class Program
             }
             Console.WriteLine($"路径: {cache}");
             Console.WriteLine("下次启动会重新下载（约 20 秒），可用来复现社区用户遇到的「没来源」场景");
+            return 0;
+        }
+
+        // --detect 命令行模式：列出本机检到的所有游戏安装（正式版 / Demo），
+        // 支持时让用户跑这个，一眼能看出「到底有没有找到游戏、找的是哪一个」
+        if (args.Length >= 1 && args[0] == "--detect")
+        {
+            var installs = PluginScanner.FindGameInstalls();
+            var libs = PluginScanner.FindSteamLibrariesForDiagnostics();
+            Console.WriteLine($"Steam 库根目录: {libs.Count} 个");
+            foreach (var l in libs) Console.WriteLine($"  {l}");
+            Console.WriteLine($"\n检到游戏安装: {installs.Count} 个");
+            foreach (var p in installs)
+            {
+                var hasBep = Directory.Exists(Path.Combine(p, "BepInEx"));
+                Console.WriteLine($"  [{PluginScanner.GameEditionText(p)}] {p}");
+                Console.WriteLine($"      BepInEx: {(hasBep ? "已安装" : "缺失")}   可用: {(hasBep ? "是" : "否")}");
+            }
+            var auto = PluginScanner.AutoDetectGamePath();
+            Console.WriteLine($"\n自动选择: {auto ?? "（没找到）"}");
+            Console.WriteLine($"配置里的路径: {ConfigManager.Load().GamePath}");
             return 0;
         }
 

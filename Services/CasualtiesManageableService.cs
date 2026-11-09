@@ -139,7 +139,7 @@ public class CasualtiesManageableService : IDisposable
         // ghproxy 97 秒），客户端超时会把**本来能成功的下载**掐断。
         // 现在各通道用各自的 CancellationToken(60s) 控制，客户端不设总超时。
         _client = new HttpClient { Timeout = System.Threading.Timeout.InfiniteTimeSpan };
-        _client.DefaultRequestHeaders.UserAgent.ParseAdd("CU-ModUpdater/1.1.1");
+        _client.DefaultRequestHeaders.UserAgent.ParseAdd("CU-ModUpdater/1.2.0");
     }
 
     /// <summary>
