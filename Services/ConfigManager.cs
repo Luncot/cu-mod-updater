@@ -53,6 +53,20 @@ public class ConfigManager
                         if (auto != null)
                             config.GamePath = auto;
                     }
+                    else if (PluginScanner.IsDemoInstall(config.GamePath))
+                    {
+                        // 正式版上线后 Demo 停止更新：配置还指着 Demo 时自动切到正式版。
+                        // 只在正式版**已装好 BepInEx** 时切换 —— 否则切过去扫不到任何插件，
+                        // 用户会以为更新器坏了；正式版没装 BepInEx 时继续用 Demo。
+                        var official = PluginScanner.FindGameInstalls()
+                            .FirstOrDefault(p => !PluginScanner.IsDemoInstall(p)
+                                                 && PluginScanner.IsValidGamePath(p));
+                        if (official != null)
+                        {
+                            config.GamePath = official;
+                            Save(config);
+                        }
+                    }
 
                     // 域名迁移：早期版本存的是 "casualtiesunknown"（游戏名），
                     // 但 N 网域名是 scavprototype —— 用错域名所有 N 网 API 都 404。

@@ -1085,7 +1085,7 @@ public class ModBrowserForm : Form
             http.Timeout = TimeSpan.FromSeconds(15);
             // 各平台 CDN 都会拒绝无 UserAgent 的请求，必须带上
             http.DefaultRequestHeaders.UserAgent.ParseAdd(
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) CU-ModUpdater/1.2.0");
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) CU-ModUpdater/1.2.1");
             // ⚠️ Referer 要跟着图源走：
             //   · GameBanana 的 CDN 校验 Referer，必须给 gamebanana.com
             //   · Nexus 的 CDN（staticdelivery.nexusmods.com）**会因为
