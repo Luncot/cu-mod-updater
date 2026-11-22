@@ -201,6 +201,44 @@ public class PluginScanner
     /// <summary>
     /// 解析单个 DLL 文件
     /// </summary>
+    /// <summary>
+    /// 只读身份识别：从一个 dll 里读 BepInPlugin 的 GUID / 名字 / 版本。
+    /// 用于「待装包安装」——压缩包里的 dll 还没落到 plugins 目录，
+    /// 需要先靠 GUID 判断它是哪个已安装 mod 的新版本（文件名可能变了）。
+    /// </summary>
+    public static (string Guid, string Name, string Version)? ReadPluginIdentity(string dllPath)
+    {
+        try
+        {
+            var dir = Path.GetDirectoryName(dllPath) ?? "";
+            var resolver = new DefaultAssemblyResolver();
+            if (Directory.Exists(dir)) resolver.AddSearchDirectory(dir);
+
+            var parameters = new ReaderParameters
+            {
+                AssemblyResolver = resolver,
+                ReadingMode = ReadingMode.Deferred,
+                ReadWrite = false,
+                InMemory = true,
+            };
+
+            using var asm = AssemblyDefinition.ReadAssembly(dllPath, parameters);
+            foreach (var type in asm.MainModule.Types)
+            {
+                var attr = type.CustomAttributes.FirstOrDefault(
+                    a => a.AttributeType.Name == "BepInPluginAttribute" ||
+                         a.AttributeType.FullName == "BepInEx.BepInPlugin");
+                if (attr == null || attr.ConstructorArguments.Count < 3) continue;
+
+                return (attr.ConstructorArguments[0].Value?.ToString() ?? "",
+                        attr.ConstructorArguments[1].Value?.ToString() ?? "",
+                        ExtractVersionString(attr.ConstructorArguments[2].Value));
+            }
+        }
+        catch { }
+        return null;
+    }
+
     private ModInfo? ScanDll(string dllPath)
     {
         var fileName = Path.GetFileName(dllPath);

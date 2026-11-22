@@ -41,6 +41,16 @@
 - **重复副本检测**：同目录下同名 dll 的新旧副本标注出来，便于清理
 - **同名冲突检测**：不同 Mod 撞了同一个 dll 名会告警
 - **隔离区**：禁用时若目标名被旧副本占着，可把旧副本移入 `BepInEx\.cleanup\`（**不删除**，可随时移回）后继续
+- **🧩 冲突扫描**：按 GUID 找出「同一个插件被加载两次」的情况 —— 重复 GUID、同名不同插件、
+  多版本并存、跨目录重复、缺前置、可疑文件名。BepInEx 对这类问题**完全静默**
+  （不报错、只是行为怪），所以必须靠文件层面查。报告可复制，附「该怎么处理」
+- **📂 打开 Mod 文件夹**：直接定位到 `BepInEx\plugins`；选中某一行时会在资源管理器里选中那个文件
+- **📥 待装包**：把 N 网手动下载的 zip / dll 丢进 `plugins\.inbox`，程序按 **GUID** 认领到
+  对应的已安装 mod 并安装（作者改了 dll 名字也能认）
+- **改名安全**：更新时若作者换了 dll 文件名，按新名字安装、旧文件移入 `.cleanup`
+  （不会出现「新旧两份都启用」的重复加载）
+- **下载留底**：每次更新的原始包归档到 `plugins\.downloads`（文件名带 mod 名 + 版本），
+  旧版本在 N 网下架后还能靠这份回滚
 
 ### Mod 浏览器（浏览 / 下载 / 安装）
 - **N 网**：全量清单（400+ 条，来自社区元数据），含作者、版本、下载量、预览图、完整描述
@@ -142,6 +152,9 @@ CU-ModUpdater.exe --check "E:\SteamLibrary\steamapps\common\Casualties Unknown"
 # 删掉社区元数据缓存，复现「首次运行」状态（验证来源识别是否依赖缓存）
 CU-ModUpdater.exe --reset-meta
 
+# 冲突扫描（与界面「🧩 冲突扫描」同一套判定，便于支持时让用户贴结果）
+CU-ModUpdater.exe --conflicts
+
 # 启动后直接打开 Mod 浏览器（可指定标签页: curated / github / nexus）
 CU-ModUpdater.exe --browser nexus
 
@@ -158,6 +171,8 @@ CU-ModUpdater.exe --preview 324
 | GitHub README 缓存 | `%APPDATA%\CU-ModUpdater\gh_readme\` |
 | 更新备份 | `游戏目录\BepInEx\plugins\.backup\` |
 | 隔离区（手动清理） | `游戏目录\BepInEx\.cleanup\` |
+| 更新下载留底 | `游戏目录\BepInEx\plugins\.downloads\` |
+| 待装包投放（手动下载的 zip） | `游戏目录\BepInEx\plugins\.inbox\` |
 
 ## 已知限制
 

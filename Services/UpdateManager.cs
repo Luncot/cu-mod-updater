@@ -13,6 +13,9 @@ public class UpdateManager : IDisposable
     private readonly NexusChecker? _nexus;
     private readonly GameBananaBrowser? _gamebanana;
     private readonly string _backupDir;
+    private readonly string _pluginsDir;
+    private readonly string _downloadsDir;   // 下载到的压缩包归档目录（plugins\.downloads）
+    private readonly string _cleanupDir;     // 改名/残留文件的隔离区（BepInEx\.cleanup）
     private readonly int _backupRetention;
     private readonly bool _enableBackup;
 
@@ -39,8 +42,14 @@ public class UpdateManager : IDisposable
         _enableBackup = enableBackup;
         _nexusCookie = nexusCookie;
         _nexusApiKey = nexusApiKey;
-        _backupDir = Path.Combine(gamePath, "BepInEx", "plugins", ".backup");
+        _pluginsDir = Path.Combine(gamePath, "BepInEx", "plugins");
+        _backupDir = Path.Combine(_pluginsDir, ".backup");
+        _downloadsDir = Path.Combine(_pluginsDir, ".downloads");
+        _cleanupDir = Path.Combine(gamePath, "BepInEx", ".cleanup");
     }
+
+    /// <summary>下载归档目录（更新时把原始压缩包留一份，方便回滚或手动重装）</summary>
+    public string DownloadsDir => _downloadsDir;
 
     private readonly string _nexusCookie = "";
     private readonly string _nexusApiKey = "";
@@ -307,7 +316,10 @@ public class UpdateManager : IDisposable
             await _github.DownloadFileAsync(mod.DownloadUrl, tempDownloadPath,
                 progress as IProgress<(long, long)>);
 
-            // 3-4. 解压（如为 zip）并替换文件
+            // 3. 归档原始包（用户要求：下载到的压缩包统一放一个文件夹，方便留底/手动重装）
+            ArchiveDownload(mod, tempDownloadPath, downloadExt);
+
+            // 4. 解压（如为 zip）并替换文件
             return await InstallFromDownloadedFileAsync(mod, tempDownloadPath, downloadExt, tempDir);
         }
         catch (Exception ex)
@@ -327,6 +339,118 @@ public class UpdateManager : IDisposable
             }
             catch { }
         }
+    }
+
+    /// <summary>
+    /// 把下载到的原始包复制进 plugins\.downloads，文件名带上「mod 名 + 版本」。
+    /// 保留原始包的理由：N 网/GB 的旧版本常常下架，出事时只能靠本地这一份。
+    /// </summary>
+    private void ArchiveDownload(ModInfo mod, string tempPath, string ext)
+    {
+        try
+        {
+            Directory.CreateDirectory(_downloadsDir);
+            var name = SanitizeFileName(
+                $"{mod.Name}_{mod.LatestVersion}{(string.IsNullOrEmpty(mod.LatestVersion) ? "" : "_")}{DateTime.Now:yyyyMMdd_HHmm}{ext}");
+            var dest = Path.Combine(_downloadsDir, name);
+            int i = 1;
+            while (File.Exists(dest))
+                dest = Path.Combine(_downloadsDir,
+                    $"{Path.GetFileNameWithoutExtension(name)}({i++}){Path.GetExtension(name)}");
+
+            File.Copy(tempPath, dest, overwrite: false);
+            OnLog?.Invoke($"  已归档: .downloads\\{Path.GetFileName(dest)}");
+        }
+        catch (Exception ex)
+        {
+            // 归档失败不该让更新失败
+            OnLog?.Invoke($"  （归档失败，不影响更新: {ex.Message}）");
+        }
+    }
+
+    /// <summary>
+    /// 把文件移进 BepInEx/.cleanup（按日期分目录）。不删除 —— 改名/换版本时
+    /// 用户可能还要把它移回来，尤其是旧版本已经下架的。
+    /// </summary>
+    private void MoveToCleanup(string filePath)
+    {
+        try
+        {
+            var sub = Path.Combine(_cleanupDir, $"{DateTime.Now:yyyyMMdd}_rename");
+            Directory.CreateDirectory(sub);
+            var dest = Path.Combine(sub, Path.GetFileName(filePath));
+            if (File.Exists(dest))
+                dest = Path.Combine(sub,
+                    $"{Path.GetFileNameWithoutExtension(filePath)}_{DateTime.Now:HHmmss}{Path.GetExtension(filePath)}");
+
+            File.Move(filePath, dest);
+            OnLog?.Invoke($"  旧文件已移入隔离区: .cleanup\\{Path.GetFileName(sub)}\\{Path.GetFileName(dest)}");
+        }
+        catch (Exception ex)
+        {
+            OnLog?.Invoke($"  （旧文件移入隔离区失败: {ex.Message}）");
+        }
+    }
+
+    /// <summary>文件名里不能出现的字符换成下划线</summary>
+    private static string SanitizeFileName(string name)
+    {
+        foreach (var c in Path.GetInvalidFileNameChars())
+            name = name.Replace(c, '_');
+        return name.Trim();
+    }
+
+    /// <summary>
+    /// 把新 dll 装到旧文件的位置（改名感知）。
+    /// 抽出来是为了让「一键更新」和「待装包安装」共用同一套规则，
+    /// 否则两条路径早晚会有一边忘了处理改名/禁用副本。
+    /// </summary>
+    private void ReplaceModFile(ModInfo mod, string finalDllPath)
+    {
+        // 替换旧文件
+        OnLog?.Invoke("  正在替换文件...");
+
+        var oldPath = mod.FilePath;
+        var oldName = Path.GetFileName(oldPath);
+        var newName = Path.GetFileName(finalDllPath);
+        var targetDir = Path.GetDirectoryName(oldPath) ?? _pluginsDir;
+        Directory.CreateDirectory(targetDir);
+
+        // ── 作者改了 dll 文件名的情况 ──
+        // 以前是「把新内容写进旧文件名」，结果磁盘上的名字和作者发布的对不上，
+        // 下次更新匹配又会歪，而且用户看目录会以为没更新。
+        // 现在按新名字装，旧文件移进隔离区（不删，可随时移回）。
+        var oldKey = ConfigManager.GetFileKey(oldName);
+        var newKey = ConfigManager.GetFileKey(newName);
+        var renamed = !string.Equals(oldKey, newKey, StringComparison.OrdinalIgnoreCase);
+
+        var targetPath = renamed
+            ? Path.Combine(targetDir, newName)
+            : Path.Combine(targetDir, oldName.EndsWith("_disabled", StringComparison.OrdinalIgnoreCase)
+                ? oldName[..^"_disabled".Length]
+                : oldName);
+
+        File.Copy(finalDllPath, targetPath, overwrite: true);
+
+        if (renamed)
+        {
+            OnLog?.Invoke($"  文件名已变更: {oldName} -> {newName}");
+            if (File.Exists(oldPath) &&
+                !string.Equals(Path.GetFullPath(oldPath), Path.GetFullPath(targetPath),
+                StringComparison.OrdinalIgnoreCase))
+                MoveToCleanup(oldPath);
+        }
+        else if (!string.Equals(oldPath, targetPath, StringComparison.OrdinalIgnoreCase) &&
+                 File.Exists(oldPath))
+        {
+            // 原来是 _disabled：新版装成启用状态，禁用副本留着没意义
+            try { File.Delete(oldPath); } catch { }
+        }
+
+        // 回写，让调用方（一键更新 / 待装包安装）看到的是磁盘真实状态
+        mod.FilePath = targetPath;
+        mod.FileName = Path.GetFileName(targetPath);
+        mod.IsEnabled = true;
     }
 
     /// <summary>
@@ -369,41 +493,9 @@ public class UpdateManager : IDisposable
                 finalDllPath = tempDownloadPath;
             }
 
-            // 替换旧文件
-            OnLog?.Invoke("  正在替换文件...");
-            var targetPath = mod.FilePath;
+            ReplaceModFile(mod, finalDllPath);
 
-            // 如果旧文件是 _disabled 状态，新文件应该替换为启用状态
-            if (targetPath.EndsWith("_disabled"))
-            {
-                targetPath = targetPath[..^"_disabled".Length];
-            }
-
-            // 确保目标目录存在
-            var targetDir = Path.GetDirectoryName(targetPath);
-            if (targetDir != null && !Directory.Exists(targetDir))
-                Directory.CreateDirectory(targetDir);
-
-            // 如果目标文件存在（正在使用），先尝试删除
-            if (File.Exists(targetPath))
-            {
-                File.Copy(finalDllPath, targetPath, overwrite: true);
-            }
-            else
-            {
-                File.Copy(finalDllPath, targetPath);
-            }
-
-            // 如果旧文件是 _disabled 版本，删除它
-            if (mod.FilePath != targetPath && File.Exists(mod.FilePath))
-            {
-                try { File.Delete(mod.FilePath); } catch { }
-            }
-
-            // 更新 Mod 信息
-            mod.FilePath = targetPath;
-            mod.FileName = Path.GetFileName(targetPath);
-            mod.IsEnabled = true;
+            // 更新 Mod 信息（文件路径/名字已由 ReplaceModFile 回写）
             mod.CurrentVersion = mod.LatestVersion;
             mod.Status = UpdateStatus.Updated;
             OnLog?.Invoke($"  ✓ {mod.Name} 更新成功！");
@@ -418,6 +510,174 @@ public class UpdateManager : IDisposable
         }
     }
 
+    /// <summary>待装包目录：把 N 网手动下载的 zip/dll 丢进来，程序按 GUID 自动认领</summary>
+    public string InboxDir => Path.Combine(_pluginsDir, ".inbox");
+
+    /// <summary>一个待装包的扫描结果</summary>
+    public sealed class InboxPackage
+    {
+        public string ArchivePath = "";
+        public List<(string DllPath, string Guid, string Name, string Version)> Dlls = new();
+        public List<(string DllName, ModInfo? Target, string Reason)> Matches = new();
+    }
+
+    /// <summary>
+    /// 扫描待装包目录，按 GUID→文件名 两级把它和已安装 mod 对上。
+    /// 只做「认领」，不动文件；真正的安装在 InstallInboxAsync 里。
+    /// </summary>
+    public List<InboxPackage> ScanInbox(List<ModInfo> mods)
+    {
+        var result = new List<InboxPackage>();
+        if (!Directory.Exists(InboxDir)) return result;
+
+        var byGuid = mods.Where(m => !string.IsNullOrEmpty(m.PluginGuid))
+            .GroupBy(m => m.PluginGuid, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(g => g.Key, g => g.First(), StringComparer.OrdinalIgnoreCase);
+        var byKey = mods.Where(m => !m.IsFolderNode)
+            .GroupBy(m => ConfigManager.GetFileKey(m.FileName), StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(g => g.Key, g => g.First(), StringComparer.OrdinalIgnoreCase);
+
+        foreach (var file in Directory.GetFiles(InboxDir)
+                     .Where(f => f.EndsWith(".zip", StringComparison.OrdinalIgnoreCase)
+                              || f.EndsWith(".dll", StringComparison.OrdinalIgnoreCase)))
+        {
+            var pkg = new InboxPackage { ArchivePath = file };
+            try
+            {
+                var temp = Path.Combine(Path.GetTempPath(), "CU-Inbox-" + Guid.NewGuid().ToString("N"));
+                Directory.CreateDirectory(temp);
+                var dlls = new List<string>();
+                if (file.EndsWith(".dll", StringComparison.OrdinalIgnoreCase))
+                {
+                    var copy = Path.Combine(temp, Path.GetFileName(file));
+                    File.Copy(file, copy, overwrite: true);
+                    dlls.Add(copy);
+                }
+                else
+                {
+                    ZipFile.ExtractToDirectory(file, temp, overwriteFiles: true);
+                    dlls.AddRange(Directory.GetFiles(temp, "*.dll", SearchOption.AllDirectories)
+                        .Where(f => !f.EndsWith("_disabled"))
+                        .Where(f => !IsFrameworkDll(Path.GetFileName(f))));
+                }
+
+                foreach (var dll in dlls)
+                {
+                    var id = PluginScanner.ReadPluginIdentity(dll);
+                    if (id == null) continue;   // 非 BepInEx 插件（原生库/依赖），跳过
+                    var (guid, name, version) = id.Value;
+                    pkg.Dlls.Add((dll, guid, name, version));
+
+                    ModInfo? target = null;
+                    var reason = "";
+                    if (!string.IsNullOrEmpty(guid) && byGuid.TryGetValue(guid, out var t1))
+                    {
+                        target = t1;
+                        reason = $"GUID 匹配（{guid}）";
+                    }
+                    else if (byKey.TryGetValue(ConfigManager.GetFileKey(Path.GetFileName(dll)), out var t2))
+                    {
+                        target = t2;
+                        reason = "文件名匹配";
+                    }
+                    else
+                    {
+                        reason = $"没有同 GUID 的已安装 mod（{guid}）";
+                    }
+                    pkg.Matches.Add((Path.GetFileName(dll), target, reason));
+                }
+            }
+            catch (Exception ex)
+            {
+                pkg.Matches.Add(("(解压失败)", null, ex.Message));
+            }
+
+            result.Add(pkg);
+        }
+
+        return result;
+    }
+
+    /// <summary>
+    /// 安装待装包：认领到的按「更新」处理（改名/禁用副本规则同 ReplaceModFile），
+    /// 认不到的原包留在 .inbox 里不动 —— 不擅自往 plugins 里塞未知 dll。
+    /// </summary>
+    public async Task<(int installed, int skipped, int failed)> InstallInboxAsync(List<ModInfo> mods)
+    {
+        var packages = ScanInbox(mods);
+        int installed = 0, skipped = 0, failed = 0;
+
+        if (packages.Count == 0)
+        {
+            OnLog?.Invoke($"待装包目录是空的：{InboxDir}");
+            return (0, 0, 0);
+        }
+
+        OnLog?.Invoke($"=== 待装包：发现 {packages.Count} 个文件 ===");
+
+        foreach (var pkg in packages)
+        {
+            var name = Path.GetFileName(pkg.ArchivePath);
+            var claimed = pkg.Matches.Where(m => m.Target != null).ToList();
+
+            if (claimed.Count == 0)
+            {
+                skipped++;
+                OnLog?.Invoke($"⏭ {name}：没有已安装的 mod 能对上（{pkg.Matches.FirstOrDefault().Reason}）");
+                continue;
+            }
+
+            try
+            {
+                foreach (var (dllName, target, _) in claimed)
+                {
+                    var dllPath = pkg.Dlls.First(d => Path.GetFileName(d.DllPath) == dllName).DllPath;
+                    var t = target!;
+
+                    if (_enableBackup && File.Exists(t.FilePath))
+                        BackupOldFile(t);
+
+                    OnLog?.Invoke($"📦 {name} → {t.Name}（{t.DisplayVersion} → {pkg.Dlls.First(d => d.DllPath == dllPath).Version}）");
+                    ReplaceModFile(t, dllPath);
+                    t.CurrentVersion = pkg.Dlls.First(d => d.DllPath == dllPath).Version;
+                    t.Status = UpdateStatus.Updated;
+                }
+
+                // 装完把原包移到 .downloads 留底（不再留在 .inbox 里重复触发）
+                Directory.CreateDirectory(_downloadsDir);
+                var dest = Path.Combine(_downloadsDir, name);
+                int i = 1;
+                while (File.Exists(dest))
+                    dest = Path.Combine(_downloadsDir,
+                        $"{Path.GetFileNameWithoutExtension(name)}({i++}){Path.GetExtension(name)}");
+                File.Move(pkg.ArchivePath, dest);
+
+                installed++;
+                OnLog?.Invoke($"  ✓ {name} 安装完成，原包已归档到 .downloads");
+            }
+            catch (Exception ex)
+            {
+                failed++;
+                OnLog?.Invoke($"  ✗ {name} 安装失败: {ex.Message}");
+            }
+        }
+
+        OnLog?.Invoke($"待装包处理完成：{installed} 个已安装 / {skipped} 个没认领 / {failed} 个失败");
+        await Task.CompletedTask;
+        return (installed, skipped, failed);
+    }
+
+    /// <summary>压缩包里常见的框架 dll，不是 mod 本体</summary>
+    private static bool IsFrameworkDll(string fileName) =>
+        fileName.StartsWith("0Harmony", StringComparison.OrdinalIgnoreCase) ||
+        fileName.StartsWith("BepInEx", StringComparison.OrdinalIgnoreCase) ||
+        fileName.StartsWith("UnityEngine", StringComparison.OrdinalIgnoreCase) ||
+        fileName.StartsWith("Unity.", StringComparison.OrdinalIgnoreCase) ||
+        fileName.StartsWith("Mono.", StringComparison.OrdinalIgnoreCase) ||
+        fileName.StartsWith("System.", StringComparison.OrdinalIgnoreCase) ||
+        fileName.Equals("Mono.Cecil.dll", StringComparison.OrdinalIgnoreCase) ||
+        fileName.Equals("LiteNetLib.dll", StringComparison.OrdinalIgnoreCase);
+
     /// <summary>
     /// 批量安装所有有更新的 Mod
     /// </summary>
@@ -427,7 +687,8 @@ public class UpdateManager : IDisposable
 
         // 按 GUID/ModId 去重（防止同一 mod 多条目重复更新/重复开网页）
         var toUpdate = mods
-            .Where(m => m.Status == UpdateStatus.UpdateAvailable)
+            // 已禁用的不参与更新：更新会把文件换成启用状态，等于偷偷把用户关掉的 mod 又打开
+            .Where(m => m.Status == UpdateStatus.UpdateAvailable && m.IsEnabled)
             .GroupBy(m => !string.IsNullOrEmpty(m.PluginGuid)
                 ? "guid:" + m.PluginGuid
                 : "file:" + Path.GetFileName(m.FilePath))

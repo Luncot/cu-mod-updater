@@ -88,6 +88,34 @@ internal static class Program
             return 0;
         }
 
+        // --conflicts 命令行模式：冲突扫描（与界面「🧩 冲突扫描」同一套判定）
+        if (args.Length >= 1 && args[0] == "--conflicts")
+        {
+            var gp = args.Length >= 2 ? args[1] : ConfigManager.Load().GamePath;
+            if (string.IsNullOrEmpty(gp)) gp = PluginScanner.AutoDetectGamePath() ?? "";
+            if (!PluginScanner.IsValidGamePath(gp))
+            {
+                Console.WriteLine("游戏路径无效: " + gp);
+                return 1;
+            }
+
+            var scanner = new PluginScanner(gp);
+            var mods = scanner.Scan();
+            var root = Path.Combine(gp, "BepInEx", "plugins");
+            var findings = Services.ConflictScanner.Scan(mods, root);
+
+            Console.WriteLine($"[scan] {mods.Count} 项   冲突 {findings.Count} 项");
+            foreach (var f in findings)
+            {
+                Console.WriteLine();
+                Console.WriteLine($"[{f.LevelText}] {f.Category}: {f.Title}");
+                if (!string.IsNullOrEmpty(f.Detail))
+                    foreach (var line in f.Detail.Split('\n')) Console.WriteLine("    " + line.Trim());
+                if (!string.IsNullOrEmpty(f.Advice)) Console.WriteLine("    处理: " + f.Advice);
+            }
+            return 0;
+        }
+
         // --scan 命令行模式：扫描插件输出 JSON（供脚本批量比对用）
         if (args.Length >= 1 && args[0] == "--scan")
         {
@@ -270,6 +298,15 @@ internal static class Program
             Console.WriteLine("[unknown / error 明细]");
             foreach (var m in mods.Where(m => m.Status is UpdateStatus.Unknown or UpdateStatus.Error))
                 Console.WriteLine($"  {m.Name,-40} #{m.Source?.ModId,-5} {m.LastError}");
+
+            // 「扫不出来」排查用：把没来源 / 没检查的列出来，附 GUID 与文件名。
+            // 有这两样就能判断是「元数据没收录」还是「匹配通道没走通」。
+            Console.WriteLine();
+            Console.WriteLine("[无源 / 未检查 明细]");
+            foreach (var m in mods.Where(m => m.Status is UpdateStatus.NoSource or UpdateStatus.NotChecked
+                                              or UpdateStatus.LocalMod))
+                Console.WriteLine($"  {m.Name,-38} status={m.Status,-10} file={m.FileName,-34} " +
+                                  $"guid={m.PluginGuid,-40} src={(m.Source == null ? "-" : m.Source.Type + ":" + m.Source.ModId)}");
 
             return 0;
         }

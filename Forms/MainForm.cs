@@ -62,6 +62,9 @@ public class MainForm : Form
     private readonly Button _updateAllBtn = new();
     private readonly Button _browseModBtn = new();
     private readonly Button _gbMatchBtn = new();
+    private readonly Button _openFolderBtn = new();
+    private readonly Button _conflictBtn = new();
+    private readonly Button _inboxBtn = new();
     private readonly Button _settingsBtn = new();
     private readonly Button _aboutBtn = new();
     private DataGridView _grid = null!;
@@ -125,7 +128,8 @@ public class MainForm : Form
             {
                 "enabled" => f.IsEnabled,
                 "disabled" => !f.IsEnabled,
-                "update" => f.Status == UpdateStatus.UpdateAvailable,
+                // 已禁用的不归到「可更新」（关掉的东西不该催更新）
+                "update" => f.Status == UpdateStatus.UpdateAvailable && f.IsEnabled,
                 "nosource" => f.Status == UpdateStatus.NoSource,
                 "local" => f.Status == UpdateStatus.LocalMod,
                 "unknown" => f.Status == UpdateStatus.Unknown,
@@ -325,6 +329,24 @@ public class MainForm : Form
         StyleButton(_gbMatchBtn, Color.FromArgb(200, 130, 30));
         _gbMatchBtn.Click += async (_, _) => await GameBananaMatchAsync();
         topFlow.Controls.Add(_gbMatchBtn);
+
+        // 打开插件目录（选中当前行对应的文件，省去在资源管理器里一层层翻）
+        _openFolderBtn.Text = "📂 打开 Mod 文件夹";
+        StyleButton(_openFolderBtn);
+        _openFolderBtn.Click += (_, _) => OpenPluginsFolder();
+        topFlow.Controls.Add(_openFolderBtn);
+
+        // 冲突扫描：同 GUID 多份、同名不同 GUID、同 mod 多版本、库版本不一致
+        _conflictBtn.Text = "🧩 冲突扫描";
+        StyleButton(_conflictBtn, Color.FromArgb(150, 100, 200));
+        _conflictBtn.Click += (_, _) => ShowConflictReport();
+        topFlow.Controls.Add(_conflictBtn);
+
+        // 待装包：N 网手动下载的 zip 丢进 plugins\.inbox，这里一键认领安装
+        _inboxBtn.Text = "📥 待装包";
+        StyleButton(_inboxBtn, Color.FromArgb(46, 120, 150));
+        _inboxBtn.Click += async (_, _) => await InstallInboxAsync();
+        topFlow.Controls.Add(_inboxBtn);
 
         _settingsBtn.Text = "⚙ 设置";
         StyleButton(_settingsBtn);
@@ -876,7 +898,8 @@ public class MainForm : Form
         PopulateGrid();
         Program.Trace("CheckUpdates: repopulated");
 
-        var updates = _mods.Count(m => m.Status == UpdateStatus.UpdateAvailable);
+        // 只统计「启用中」的：已禁用的 mod 不该再喊可更新，也不该进一键更新
+        var updates = _mods.Count(m => m.Status == UpdateStatus.UpdateAvailable && m.IsEnabled);
         var upToDate = _mods.Count(m => m.Status == UpdateStatus.UpToDate);
         var errors = _mods.Count(m => m.Status == UpdateStatus.Error);
         _toolStripStatus.Text = $"检查完成: {updates} 个可更新, {upToDate} 个已最新, {errors} 个错误";
@@ -895,7 +918,7 @@ public class MainForm : Form
         if (_updater == null) return;
 
         var toUpdate = _mods
-            .Where(m => m.Status == UpdateStatus.UpdateAvailable)
+            .Where(m => m.Status == UpdateStatus.UpdateAvailable && m.IsEnabled)
             // 按 GUID/文件名去重（防止备份目录等造成的重复条目）
             .GroupBy(m => !string.IsNullOrEmpty(m.PluginGuid)
                 ? "guid:" + m.PluginGuid
@@ -1200,8 +1223,9 @@ public class MainForm : Form
                     "enabled" => m.IsEnabled,
                     "disabled" => !m.IsEnabled,
                     // 组员沿用组长结论：组长有更新，整组都算「待更新」
-                    "update" => m.Status == UpdateStatus.UpdateAvailable ||
-                                (m.GroupOwner?.Status == UpdateStatus.UpdateAvailable),
+                    "update" => m.IsEnabled &&
+                                (m.Status == UpdateStatus.UpdateAvailable ||
+                                 m.GroupOwner?.Status == UpdateStatus.UpdateAvailable),
                     "nosource" => m.Status == UpdateStatus.NoSource,
                     "local" => m.Status == UpdateStatus.LocalMod,
                     "unknown" => m.Status == UpdateStatus.Unknown ||
@@ -1389,6 +1413,8 @@ public class MainForm : Form
     /// </summary>
     private static string GetActionText(ModInfo mod)
     {
+        // 已禁用的不给动作：更新会把文件写成启用状态，等于把它又打开
+        if (!mod.IsEnabled) return "—";
         switch (mod.Status)
         {
             case UpdateStatus.UpdateAvailable: return "更新";
@@ -1451,6 +1477,15 @@ public class MainForm : Form
                     break;
                 }
 
+                // 已禁用的行不显示更新结论 —— 关掉的东西不该再喊「可更新」
+                if (!mod.IsEnabled)
+                {
+                    e.Value = "⊘ 已禁用";
+                    e.CellStyle!.ForeColor = Theme.TextDim;
+                    e.FormattingApplied = true;
+                    break;
+                }
+
                 // 组内成员沿用组长的检查结论（它们共享同一来源与版本）
                 var owner = mod.GroupOwner != null && !mod.IsGroupHead && mod.IsEnabled
                     ? mod.GroupOwner : mod;
@@ -1476,7 +1511,8 @@ public class MainForm : Form
                     ? mod.GroupOwner : mod;
                 if (!string.IsNullOrEmpty(owner.LatestVersion))
                 {
-                    e.CellStyle!.ForeColor = owner.HasUpdate ? Theme.Warning : Theme.TextDim;
+                    e.CellStyle!.ForeColor = !mod.IsEnabled ? Color.FromArgb(105, 105, 110)
+                        : owner.HasUpdate ? Theme.Warning : Theme.TextDim;
                 }
                 break;
             }
@@ -2281,6 +2317,296 @@ public class MainForm : Form
             Controls.Add(cancel);
             AcceptButton = ok;
             CancelButton = cancel;
+        }
+    }
+
+    // ==================== 打开目录 / 冲突扫描 ====================
+
+    /// <summary>打开 BepInEx\plugins；选中行有文件时直接在资源管理器里选中它</summary>
+    private void OpenPluginsFolder()
+    {
+        var dir = Path.Combine(_config.GamePath, "BepInEx", "plugins");
+        if (!Directory.Exists(dir))
+        {
+            MessageBox.Show($"找不到插件目录：\n{dir}\n\n请确认游戏路径正确，且已安装 BepInEx。",
+                "提示", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
+
+        try
+        {
+            var mod = _grid.CurrentRow == null ? null : ModAtRow(_grid.CurrentRow.Index);
+            if (mod != null && !mod.IsFolderNode && File.Exists(mod.FilePath))
+                Process.Start(new ProcessStartInfo("explorer.exe",
+                    $"/select,\"{mod.FilePath}\"") { UseShellExecute = true });
+            else
+                Process.Start(new ProcessStartInfo("explorer.exe",
+                    $"\"{dir}\"") { UseShellExecute = true });
+        }
+        catch (Exception ex)
+        {
+            Log("打开目录失败: " + ex.Message);
+        }
+    }
+
+    /// <summary>
+    /// 冲突扫描报告。BepInEx 对冲突基本静默（重复加载、同名覆盖、旧版本残留都不报错），
+    /// 所以这里在文件层面先挑出来，给出「该怎么办」而不是只列现象。
+    /// </summary>
+    private void ShowConflictReport()
+    {
+        if (_mods.Count == 0)
+        {
+            MessageBox.Show("请先点击「扫描插件」。", "提示", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
+
+        var pluginsRoot = Path.Combine(_config.GamePath, "BepInEx", "plugins");
+        var findings = Services.ConflictScanner.Scan(_mods, pluginsRoot);
+
+        var dlg = new Form
+        {
+            Text = findings.Count > 0 ? $"冲突扫描 - 发现 {findings.Count} 项" : "冲突扫描 - 没有发现问题",
+            Size = new Size(880, 560),
+            MinimumSize = new Size(700, 460),
+            StartPosition = FormStartPosition.CenterParent,
+            BackColor = Theme.Bg,
+            ForeColor = Theme.Text,
+        };
+
+        var split = new SplitContainer
+        {
+            Dock = DockStyle.Fill,
+            Orientation = Orientation.Horizontal,
+            SplitterDistance = 260,
+            BackColor = Theme.Bg,
+        };
+        split.Panel1.BackColor = Theme.Bg;
+        split.Panel2.BackColor = Theme.Bg;
+
+        var lv = new ListView
+        {
+            Dock = DockStyle.Fill,
+            View = View.Details,
+            FullRowSelect = true,
+            MultiSelect = false,
+            BackColor = Theme.GridBg,
+            ForeColor = Theme.Text,
+        };
+        lv.Columns.Add("", 46);
+        lv.Columns.Add("类型", 100);
+        lv.Columns.Add("说明", 620);
+
+        foreach (var f in findings)
+        {
+            var item = new ListViewItem(new[] { f.LevelText, f.Category, f.Title })
+            {
+                Tag = f,
+                ForeColor = f.Level switch
+                {
+                    Services.ConflictScanner.Severity.High => Theme.Warning,
+                    Services.ConflictScanner.Severity.Medium => Color.FromArgb(190, 150, 255),
+                    _ => Theme.TextDim,
+                },
+            };
+            lv.Items.Add(item);
+        }
+
+        var detail = new RichTextBox
+        {
+            Dock = DockStyle.Fill,
+            BackColor = Theme.GridBg,
+            ForeColor = Theme.Text,
+            ReadOnly = true,
+            BorderStyle = BorderStyle.None,
+            Font = new Font("Consolas", 9.5f),
+            DetectUrls = false,
+        };
+
+        void ShowDetail(Services.ConflictScanner.Finding? f)
+        {
+            if (f == null)
+            {
+                detail.Text = findings.Count == 0
+                    ? "没有发现冲突。\n\n（检查范围：重复 GUID、同名 dll、多版本并存、跨目录重复、缺前置、可疑文件名）"
+                    : "选中一条查看详情。";
+                return;
+            }
+            var sb = new System.Text.StringBuilder();
+            sb.AppendLine($"【{f.Category}】{f.Title}");
+            sb.AppendLine();
+            if (!string.IsNullOrEmpty(f.Detail))
+            {
+                sb.AppendLine(f.Detail);
+                sb.AppendLine();
+            }
+            if (!string.IsNullOrEmpty(f.Advice))
+            {
+                sb.AppendLine("怎么处理：");
+                sb.AppendLine("  " + f.Advice.Replace("\n", "\n  "));
+            }
+            detail.Text = sb.ToString();
+        }
+
+        lv.SelectedIndexChanged += (_, _) =>
+        {
+            var f = lv.SelectedItems.Count > 0 ? lv.SelectedItems[0].Tag as Services.ConflictScanner.Finding : null;
+            ShowDetail(f);
+        };
+        if (lv.Items.Count > 0) lv.Items[0].Selected = true;
+        ShowDetail(findings.FirstOrDefault());
+
+        split.Panel1.Controls.Add(lv);
+        split.Panel2.Controls.Add(detail);
+
+        var bottom = new FlowLayoutPanel
+        {
+            Dock = DockStyle.Bottom,
+            Height = 44,
+            FlowDirection = FlowDirection.RightToLeft,
+            Padding = new Padding(6, 6, 6, 6),
+            BackColor = Theme.Bg,
+        };
+
+        var btnClose = new Button { Text = "关闭", Size = new Size(88, 30) };
+        StyleButton(btnClose);
+        btnClose.Click += (_, _) => dlg.Close();
+
+        var btnCopy = new Button { Text = "复制报告", Size = new Size(96, 30) };
+        StyleButton(btnCopy);
+        btnCopy.Click += (_, _) =>
+        {
+            try
+            {
+                System.Windows.Forms.Clipboard.SetText(ReportText(findings));
+            }
+            catch { }
+        };
+
+        var btnFolder = new Button { Text = "打开插件目录", Size = new Size(120, 30) };
+        StyleButton(btnFolder);
+        btnFolder.Click += (_, _) => OpenPluginsFolder();
+
+        bottom.Controls.Add(btnClose);
+        bottom.Controls.Add(btnCopy);
+        bottom.Controls.Add(btnFolder);
+
+        dlg.Controls.Add(split);
+        dlg.Controls.Add(bottom);
+        dlg.ShowDialog(this);
+
+        Log(findings.Count == 0
+            ? "冲突扫描: 没有发现问题"
+            : $"冲突扫描: {findings.Count} 项（高 {findings.Count(f => f.Level == Services.ConflictScanner.Severity.High)}）");
+    }
+
+    private static string ReportText(List<Services.ConflictScanner.Finding> findings)
+    {
+        var sb = new System.Text.StringBuilder();
+        sb.AppendLine("=== CU Mod 更新器 · 冲突扫描报告 ===");
+        sb.AppendLine($"时间: {DateTime.Now:yyyy-MM-dd HH:mm:ss}   共 {findings.Count} 项");
+        sb.AppendLine();
+        foreach (var f in findings)
+        {
+            sb.AppendLine($"[{f.LevelText}] {f.Category}: {f.Title}");
+            if (!string.IsNullOrEmpty(f.Detail)) sb.AppendLine(f.Detail);
+            if (!string.IsNullOrEmpty(f.Advice)) sb.AppendLine("  处理: " + f.Advice);
+            sb.AppendLine();
+        }
+        return sb.ToString();
+    }
+
+    // ==================== 待装包（手动下载的 zip 自动安装） ====================
+
+    /// <summary>
+    /// N 网免费账号不能直链下载，只能网页手动下。这一条通路是：
+    /// 把下好的 zip 丢进 plugins\.inbox → 点这里 → 按 GUID 认领到对应 mod 并安装。
+    ///
+    /// 为什么要按 GUID 认领而不是按文件名：作者换名字的情况不少（上次 RshLib /
+    /// Seal Containers 都改过），按文件名会认错或者装出两份。
+    /// </summary>
+    private async Task InstallInboxAsync()
+    {
+        if (_updater == null)
+        {
+            MessageBox.Show("请先确认游戏路径。", "提示", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
+
+        var inbox = _updater.InboxDir;
+        Directory.CreateDirectory(inbox);
+
+        if (_mods.Count == 0) await ScanAsync();
+
+        var packages = _updater.ScanInbox(_mods);
+        if (packages.Count == 0)
+        {
+            try
+            {
+                Process.Start(new ProcessStartInfo("explorer.exe", $"\"{inbox}\"") { UseShellExecute = true });
+            }
+            catch { }
+            MessageBox.Show(
+                "待装包目录里还没有文件。\n\n" +
+                $"已为你打开：\n{inbox}\n\n" +
+                "把 N 网手动下载的 zip / dll 拖进去，再点一次「📥 待装包」。\n" +
+                "程序会按 GUID（不是文件名）判断它是哪个已装 mod 的新版本。",
+                "待装包", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
+
+        // 认领预览：让用户先看到「谁会被装、谁认不出来」
+        var sb = new System.Text.StringBuilder();
+        var claimable = 0;
+        foreach (var pkg in packages)
+        {
+            sb.AppendLine($"• {Path.GetFileName(pkg.ArchivePath)}");
+            foreach (var (dll, target, reason) in pkg.Matches)
+            {
+                if (target != null)
+                {
+                    claimable++;
+                    sb.AppendLine($"    → {target.Name}  {target.DisplayVersion} → 新文件 {dll}（{reason}）");
+                }
+                else
+                {
+                    sb.AppendLine($"    ⏭ {dll}：{reason}");
+                }
+            }
+        }
+
+        if (claimable == 0)
+        {
+            MessageBox.Show(
+                "这些包都没能和已安装的 mod 对上（GUID 与文件名都不匹配）：\n\n" + sb +
+                "\n原包会留在 .inbox 里不动。如果是全新 mod，请用「🛒 浏览 Mod」安装；\n" +
+                "如果是某个 mod 的新版本，可以在右键菜单里手动指定来源。",
+                "没有可安装的包", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
+
+        if (MessageBox.Show($"{sb}\n\n确认安装？旧文件会先备份。",
+                "确认安装待装包", MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes)
+            return;
+
+        _inboxBtn.Enabled = false;
+        ShowProgress(true);
+        try
+        {
+            var (installed, skipped, failed) = await _updater.InstallInboxAsync(_mods);
+            PopulateGrid();
+            _toolStripStatus.Text = $"待装包: {installed} 已安装 / {skipped} 未认领 / {failed} 失败";
+            MessageBox.Show(
+                $"安装完成：{installed} 个成功" +
+                (skipped > 0 ? $"\n{skipped} 个没认领（原包留在 .inbox）" : "") +
+                (failed > 0 ? $"\n{failed} 个失败，详见日志" : "") +
+                "\n\n装好的原始包已归档到 plugins\\.downloads。",
+                "待装包", MessageBoxButtons.OK, MessageBoxIcon.Information);
+        }
+        finally
+        {
+            ShowProgress(false);
+            _inboxBtn.Enabled = true;
         }
     }
 
