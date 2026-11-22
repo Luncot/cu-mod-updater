@@ -517,6 +517,7 @@ public class UpdateManager : IDisposable
     public sealed class InboxPackage
     {
         public string ArchivePath = "";
+        public string TempDir = "";
         public List<(string DllPath, string Guid, string Name, string Version)> Dlls = new();
         public List<(string DllName, ModInfo? Target, string Reason)> Matches = new();
     }
@@ -546,6 +547,7 @@ public class UpdateManager : IDisposable
             {
                 var temp = Path.Combine(Path.GetTempPath(), "CU-Inbox-" + Guid.NewGuid().ToString("N"));
                 Directory.CreateDirectory(temp);
+                pkg.TempDir = temp;
                 var dlls = new List<string>();
                 if (file.EndsWith(".dll", StringComparison.OrdinalIgnoreCase))
                 {
@@ -660,11 +662,27 @@ public class UpdateManager : IDisposable
                 failed++;
                 OnLog?.Invoke($"  ✗ {name} 安装失败: {ex.Message}");
             }
+            finally
+            {
+                TryDeleteDir(pkg.TempDir);
+            }
         }
 
         OnLog?.Invoke($"待装包处理完成：{installed} 个已安装 / {skipped} 个没认领 / {failed} 个失败");
         await Task.CompletedTask;
         return (installed, skipped, failed);
+    }
+
+    /// <summary>清掉 ScanInbox 解出来的临时目录（预览模式用，避免留垃圾）</summary>
+    public void DisposeInboxCache(IEnumerable<InboxPackage> packages)
+    {
+        foreach (var p in packages) TryDeleteDir(p.TempDir);
+    }
+
+    private static void TryDeleteDir(string dir)
+    {
+        try { if (!string.IsNullOrEmpty(dir) && Directory.Exists(dir)) Directory.Delete(dir, true); }
+        catch { }
     }
 
     /// <summary>压缩包里常见的框架 dll，不是 mod 本体</summary>

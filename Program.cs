@@ -88,6 +88,53 @@ internal static class Program
             return 0;
         }
 
+        // --inbox 命令行模式：待装包（N 网手动下载的 zip/dll）
+        //   CU-ModUpdater.exe --inbox <游戏目录>            只列预览，不动文件
+        //   CU-ModUpdater.exe --inbox <游戏目录> --apply    真的安装
+        if (args.Length >= 1 && args[0] == "--inbox")
+        {
+            var gp = args.Length >= 2 && !args[1].StartsWith("--") ? args[1] : ConfigManager.Load().GamePath;
+            if (string.IsNullOrEmpty(gp)) gp = PluginScanner.AutoDetectGamePath() ?? "";
+            if (!PluginScanner.IsValidGamePath(gp))
+            {
+                Console.WriteLine($"游戏路径无效: {gp}");
+                return 1;
+            }
+
+            var cfg = ConfigManager.Load();
+            var mods = new PluginScanner(gp).Scan();
+            var github = new GitHubChecker(string.IsNullOrEmpty(cfg.GitHubToken) ? null : cfg.GitHubToken);
+            NexusChecker? nx = string.IsNullOrEmpty(cfg.NexusApiKey)
+                ? null : new NexusChecker(cfg.NexusApiKey, cfg.NexusGameDomain);
+            using var up = new UpdateManager(github, nx, new GameBananaBrowser(), gp,
+                cfg.BackupRetention, cfg.EnableBackup, cfg.NexusCookie, cfg.NexusApiKey);
+            up.OnLog = Console.WriteLine;
+
+            var pkgs = up.ScanInbox(mods);
+            Console.WriteLine($"[inbox] {up.InboxDir}");
+            Console.WriteLine($"[inbox] 已安装 {mods.Count} 项，待装包 {pkgs.Count} 个");
+            foreach (var k in pkgs)
+            {
+                Console.WriteLine($"  {Path.GetFileName(k.ArchivePath)}");
+                foreach (var (dll, target, reason) in k.Matches)
+                    Console.WriteLine($"    {(target == null ? "⏭" : "→")} {dll}" +
+                                      (target == null ? $"  {reason}" : $"  → {target.Name} {target.DisplayVersion}（{reason}）"));
+            }
+
+            var apply = args.Contains("--apply");
+            if (apply)
+            {
+                var (ok, skipped, failed) = up.InstallInboxAsync(mods).GetAwaiter().GetResult();
+                Console.WriteLine($"[result] 安装 {ok} / 未认领 {skipped} / 失败 {failed}");
+            }
+            else
+            {
+                up.DisposeInboxCache(pkgs);
+                Console.WriteLine("[mode] 仅预览（加 --apply 才会真的安装）");
+            }
+            return 0;
+        }
+
         // --conflicts 命令行模式：冲突扫描（与界面「🧩 冲突扫描」同一套判定）
         if (args.Length >= 1 && args[0] == "--conflicts")
         {
