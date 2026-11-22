@@ -392,6 +392,24 @@ public class UpdateManager : IDisposable
         }
     }
 
+    /// <summary>
+    /// 两个路径是否指向同一个文件（忽略斜杠方向与大小写）。
+    /// Windows 上 Path.Combine / 扫描器给出的分隔符可能不一致，
+    /// 直接 string.Equals 会判成「不同文件」。
+    /// </summary>
+    private static bool PathsEqual(string a, string b)
+    {
+        try
+        {
+            return string.Equals(Path.GetFullPath(a), Path.GetFullPath(b),
+                StringComparison.OrdinalIgnoreCase);
+        }
+        catch
+        {
+            return string.Equals(a, b, StringComparison.OrdinalIgnoreCase);
+        }
+    }
+
     /// <summary>文件名里不能出现的字符换成下划线</summary>
     private static string SanitizeFileName(string name)
     {
@@ -430,18 +448,23 @@ public class UpdateManager : IDisposable
                 ? oldName[..^"_disabled".Length]
                 : oldName);
 
+
         File.Copy(finalDllPath, targetPath, overwrite: true);
+
+        // ⚠️ 这里必须比「规范化后的完整路径」，不能直接比字符串。
+        // 实例：oldPath 来自扫描器，可能是 "D:/AS/ASSV/_x\BepInEx\plugins\RshLib.dll"，
+        // 而 targetPath 由 Path.Combine 拼出来，全是反斜杠 —— 两个字符串不相等，
+        // 但指的是同一个文件。以前那句 File.Delete(oldPath) 会把刚复制好的新文件删掉，
+        // 界面还显示「更新成功」，磁盘上却什么都没有。
+        var samePath = PathsEqual(oldPath, targetPath);
 
         if (renamed)
         {
             OnLog?.Invoke($"  文件名已变更: {oldName} -> {newName}");
-            if (File.Exists(oldPath) &&
-                !string.Equals(Path.GetFullPath(oldPath), Path.GetFullPath(targetPath),
-                StringComparison.OrdinalIgnoreCase))
+            if (!samePath && File.Exists(oldPath))
                 MoveToCleanup(oldPath);
         }
-        else if (!string.Equals(oldPath, targetPath, StringComparison.OrdinalIgnoreCase) &&
-                 File.Exists(oldPath))
+        else if (!samePath && File.Exists(oldPath))
         {
             // 原来是 _disabled：新版装成启用状态，禁用副本留着没意义
             try { File.Delete(oldPath); } catch { }
@@ -644,6 +667,8 @@ public class UpdateManager : IDisposable
                     t.CurrentVersion = pkg.Dlls.First(d => d.DllPath == dllPath).Version;
                     t.Status = UpdateStatus.Updated;
                 }
+
+                var probe = claimed[0].Target!.FilePath;
 
                 // 装完把原包移到 .downloads 留底（不再留在 .inbox 里重复触发）
                 Directory.CreateDirectory(_downloadsDir);
