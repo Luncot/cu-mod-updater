@@ -1,4 +1,4 @@
-using System.Text;
+﻿using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using CUModUpdater.Models;
@@ -250,7 +250,7 @@ public class ConfigManager
             return false;
 
         // 1. 官方元数据 GUID 强匹配（CasualtiesManageable，每小时更新）
-        var cmSource = Services.CasualtiesManageableService.TryGetSourceCached(mod.PluginGuid);
+        var cmSource = Services.CasualtiesManageableService.TryGetSourceCached(mod.PluginGuid, mod.FileName);
         if (cmSource != null)
         {
             SetSource(config, mod, cmSource);

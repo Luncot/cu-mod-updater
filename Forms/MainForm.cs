@@ -2836,7 +2836,7 @@ public class MainForm : Form
     {
         var modId = mod.Source?.IsNexus == true ? mod.Source.ModId : null;
         return Services.CasualtiesManageableService.FindByModId(modId)
-            ?? Services.CasualtiesManageableService.FindByGuidCached(mod.PluginGuid);
+            ?? Services.CasualtiesManageableService.FindByGuidCached(mod.PluginGuid, mod.FileName);
     }
 
     /// <summary>

@@ -139,7 +139,7 @@ public class CasualtiesManageableService : IDisposable
         // ghproxy 97 秒），客户端超时会把**本来能成功的下载**掐断。
         // 现在各通道用各自的 CancellationToken(60s) 控制，客户端不设总超时。
         _client = new HttpClient { Timeout = System.Threading.Timeout.InfiniteTimeSpan };
-        _client.DefaultRequestHeaders.UserAgent.ParseAdd("CU-ModUpdater/1.3.0");
+        _client.DefaultRequestHeaders.UserAgent.ParseAdd("CU-ModUpdater/1.3.1");
     }
 
     /// <summary>
@@ -320,9 +320,9 @@ public class CasualtiesManageableService : IDisposable
     /// 缓存不存在/过期时返回 null——预热请先调用实例的 EnsureLoadedAsync。
     /// 元数据未收录时回退到人工补录表（见 ManualNexusFallbacks）。
     /// </summary>
-    public static ModSource? TryGetSourceCached(string? guid)
+    public static ModSource? TryGetSourceCached(string? guid, string? fileName = null)
     {
-        var entry = FindByGuidCached(guid);
+        var entry = FindByGuidCached(guid, fileName);
         if (entry != null)
             return new ModSource { Type = "nexus", ModId = entry.NexusModId };
 
@@ -774,7 +774,7 @@ public class CasualtiesManageableService : IDisposable
         if (IsLocalMod(fileName, guid)) return null;
 
         // GUID 优先，dll 文件名兜底（兜底同样走独占判定，歧义即放弃）
-        var entry = FindByGuidCached(guid) ?? FindByDllNameCached(fileName);
+        var entry = FindByGuidCached(guid, fileName) ?? FindByDllNameCached(fileName);
         if (entry == null)
         {
             // 人工补录兜底（元数据抓取滞后的 mod）
@@ -901,14 +901,14 @@ public class CasualtiesManageableService : IDisposable
     /// 自有 mod 的 GUID 不参与匹配 —— 但「自有」的判定本身会反查元数据，
     /// 所以真正的匹配逻辑抽在 <see cref="FindByGuidRaw"/>，这里只做过滤。
     /// </summary>
-    public static CmModEntry? FindByGuidCached(string? guid)
+    public static CmModEntry? FindByGuidCached(string? guid, string? fileName = null)
     {
         if (string.IsNullOrEmpty(guid)) return null;
         // 占位符 GUID（作者没改的模板默认值）不参与匹配
         if (IsPlaceholderGuid(guid)) return null;
         // 自有 mod 的 GUID 不参与元数据匹配
         if (IsLocalMod(null, guid)) return null;
-        return FindByGuidRaw(guid);
+        return FindByGuidRaw(guid, fileName);
     }
 
     /// <summary>
@@ -916,22 +916,51 @@ public class CasualtiesManageableService : IDisposable
     /// 单独抽出来是因为 <see cref="IsLocalMod"/> 要先反查元数据才能判定是不是自有
     /// ——若它直接调本方法会 infinite recursion。
     /// </summary>
-    public static CmModEntry? FindByGuidRaw(string? guid)
+    public static CmModEntry? FindByGuidRaw(string? guid, string? fileName = null)
     {
         if (string.IsNullOrEmpty(guid)) return null;
         if (IsPlaceholderGuid(guid)) return null;
         var entries = GetEntries();
         if (entries == null) return null;
 
+        var baseName = Path.GetFileName(fileName ?? "").ToLowerInvariant();
+        if (baseName.EndsWith("_disabled")) baseName = baseName[..^"_disabled".Length];
+
         CmModEntry? best = null;
+        int bestScore = int.MinValue;
         foreach (var m in entries)
         {
             if (!m.BepInExPlugins.ContainsKey(guid)) continue;
             // 整合包/合集会登记大量 GUID，不能让它吸走单个 mod
             if (IsPackLike(m)) continue;
-            // 优先最专一的条目
-            if (best == null || m.BepInExPlugins.Count < best.BepInExPlugins.Count)
+
+            // ── 同一个 GUID 常被多个条目声明，必须挑「最像它自己」的那条 ──
+            // 实例：com.rushellxyz.rshlib 同时出现在
+            //   #32 RshLib（原库，已被作者标 UNSUPPORTED）
+            //   #403 RshCCL（官方接班人，转发到 CUCoreLib）
+            //   #579 Chekushka（把库打包进自己）
+            // 只按「谁先出现」挑会随机挑到打包者，于是出现「点更新打开了别人的页面」。
+            // 评分顺序：dll 文件名对得上 > 只声明一个 GUID > dll 数量少。
+            var score = 0;
+            if (baseName.Length > 0)
+            {
+                foreach (var dn in m.DllNames)
+                {
+                    if (Path.GetFileName(dn).ToLowerInvariant() == baseName) { score += 8; break; }
+                }
+            }
+            score += m.BepInExPlugins.Count == 1 ? 4 : m.BepInExPlugins.Count <= 3 ? 2 : 0;
+            score += m.DllNames.Count <= 3 ? 2 : 0;
+
+            if (score > bestScore ||
+                (score == bestScore && best != null &&
+                 (m.BepInExPlugins.Count < best.BepInExPlugins.Count ||
+                  (m.BepInExPlugins.Count == best.BepInExPlugins.Count &&
+                   string.CompareOrdinal(m.LastUpdated ?? "", best.LastUpdated ?? "") > 0))))
+            {
                 best = m;
+                bestScore = score;
+            }
         }
         return best;
     }
